@@ -31,7 +31,9 @@ logging.basicConfig(
 )
 
 # ----------------- CONFIGURATION ----------------- #
-BOT_TOKEN = "8767739044:AAFitpz-UPHOkpkpEiKUhvla9olYHZ5IKwc"  # Telegram Bot Token
+# পুরনো ৭জি টোকেন বাদ দিয়ে আপনার দেওয়া নতুন টোকেনটি মেইন টোকেন করা হলো
+BOT_TOKEN = "7678905793:AAGEcM1-kHIo-jVsrZD0WliltCiSc9MIfBM"  
+
 ADMIN_ID = 6162953772                # Admin User ID
 META_AI_KEY = os.getenv("META_AI_API_KEY", "nxt_3a454c41e6a84aeead28d1fb4aec87a4").strip()
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -70,7 +72,7 @@ SHUTDOWN = threading.Event()
 
 @app.route('/')
 def home():
-    return "✨ 7G Main Bot & Dynamic Bot Manager Online & Running!"
+    return "✨ Main Bot Online & Running with New Token!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -392,11 +394,11 @@ def run_dynamic_bot(new_token: str):
 
         @dyn_bot.message_handler(commands=['start'])
         def dyn_start(message):
-            dyn_bot.reply_to(message, "✨ *Welcome to your Custom 7G Bot!*\n\nPowered by 7G Ultimate Bot Engine (Credit: Amaz Uddin Abir).", parse_mode="Markdown")
+            dyn_bot.reply_to(message, "✨ *Welcome to your Custom Bot!*\n\nPowered by Ultimate Bot Engine (Credit: Amaz Uddin Abir).", parse_mode="Markdown")
 
         @dyn_bot.message_handler(func=lambda msg: True)
         def dyn_echo(message):
-            dyn_bot.reply_to(message, f"🤖 *Echo from Custom Bot:*\n{message.text}\n\n_Powered by 7G Ultimate Bot._", parse_mode="Markdown")
+            dyn_bot.reply_to(message, f"🤖 *Echo from Custom Bot:*\n{message.text}\n\n_Powered by Ultimate Bot Engine._", parse_mode="Markdown")
 
         log("Dynamic Bot started successfully with token prefix: %s...", new_token[:10])
         dyn_bot.infinity_polling(skip_pending=True)
@@ -426,7 +428,7 @@ def send_welcome(message):
     )
 
     welcome_text = (
-        "✨🔥 *Welcome to 7G Ultimate Bot!* 🔥✨\n\n"
+        "✨🔥 *Welcome to Ultimate Bot!* 🔥✨\n\n"
         "📥 *Instagram & TikTok:* Send any link for instant HD download!\n"
         "🤖 *AI Assistant & Image Generation (/ai, /image)*\n"
         "✨ *Create Bot:* Spin up your own bot instantly using the menu below!\n\n"
@@ -459,7 +461,7 @@ def user_stats(message):
         f"💬 *Total Messages Sent:* `{msgs}`\n"
         f"📥 *Total Videos Downloaded:* `{downloads}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚡ *Thanks for using 7G Bot!* ❤️"
+        f"⚡ *Thanks for using Bot!* ❤️"
     )
     bot.reply_to(message, stats_msg, parse_mode="Markdown")
 
@@ -487,4 +489,4 @@ def show_stats(message):
         dl_count = info.get('downloads_count', 0)
         links = info.get('download_links', [])
         
-        stats_text += f"\n👤 *{escape(name)}* ({escape(uname)})\n🆔 ID: `{uid}`\n📥 Downlo
+        stats_text += f"\n👤 *{escape(name)}* ({escape(u
