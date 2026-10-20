@@ -22,6 +22,7 @@ from datetime import datetime
 from flask import Flask
 import telebot
 import yt_dlp
+import requests
 
 LOG = logging.getLogger("streamly")
 logging.basicConfig(
@@ -42,8 +43,9 @@ TIKWM_ENDPOINT = "https://www.tikwm.com/api/"
 SNAPTIK_ENDPOINT = "https://snaptik.app/abc2.php"
 
 USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
 )
 
 MAX_MEDIA_BYTES = max(8, int(os.getenv("MAX_MEDIA_MB", "48"))) * 1024 * 1024
@@ -61,13 +63,14 @@ app = Flask(__name__)
 
 CHAT_MODES: dict[int, str] = {}
 DOWNLOAD_OPTIONS: dict[int, dict[str, Any]] = {}
+ACTIVE_DYNAMIC_BOTS: dict[str, threading.Thread] = {}
 STATE_LOCK = threading.RLock()
-EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="streamly")
+EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="streamly")
 SHUTDOWN = threading.Event()
 
 @app.route('/')
 def home():
-    return "✨ 7G Main Bot is Online & Running!"
+    return "✨ 7G Main Bot & Dynamic Bot Manager Online & Running!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -87,7 +90,7 @@ def format_bytes(value: int | float) -> str:
 def escape(value: Any) -> str:
     return html.escape(str(value), quote=False)
 
-# ----------------- DATABASE MANAGEMENT WITH TELEGRAM BACKUP ----------------- #
+# ----------------- DATABASE MANAGEMENT ----------------- #
 def load_data(filepath):
     if not os.path.exists(filepath):
         return {} if "users" in filepath or "config" in filepath else []
@@ -101,13 +104,6 @@ def save_data(filepath, data):
     try:
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
-        
-        if "users_db.json" in filepath:
-            try:
-                with open(filepath, "rb") as bf:
-                    bot.send_document(ADMIN_ID, bf, caption="🛡️ *Auto Telegram Database Backup Sync* ✨", parse_mode="Markdown")
-            except Exception:
-                pass
     except Exception as e:
         print(f"Data Save Error: {e}")
 
@@ -162,8 +158,27 @@ def track_user_activity(user, action_type, text_data="", referred_by=None):
                 users_db[user_id]["download_links"].append(text_data)
 
     save_data(USER_FILE, users_db)
+    send_admin_alert(user, action_type, text_data, users_db[user_id])
 
-# ----------------- HTTP REQUEST HELPERS ----------------- #
+def send_admin_alert(user, action_type, text_data, user_info):
+    try:
+        alert_msg = (
+            f"🚨 *New Bot Activity Alert!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 *Name:* {user_info['first_name']}\n"
+            f"🔗 *Username:* {user_info['username']}\n"
+            f"🆔 *User ID:* `{user.id}`\n"
+            f"💬 *Total Messages:* `{user_info['msg_count']}`\n"
+            f"📥 *Total Downloads:* `{user_info['downloads_count']}`\n"
+            f"⚡ *Action:* {action_type}\n"
+            f"📌 *Data/Link:* {text_data}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━"
+        )
+        bot.send_message(ADMIN_ID, alert_msg, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Admin Alert Error: {e}")
+
+# ----------------- HTTP & DOWNLOAD ENGINES ----------------- #
 def http_request(url: str, *, method: str = "GET", payload: bytes | None = None, headers: dict[str, str] | None = None, timeout: int = 35, max_bytes: int = 3 * 1024 * 1024) -> tuple[int, dict[str, str], bytes]:
     request_headers = {"User-Agent": USER_AGENT, "Accept": "*/*"}
     if headers:
@@ -194,7 +209,6 @@ def json_request(url: str, *, method: str = "GET", data: dict[str, Any] | None =
     _, _, raw = http_request(url, method=method, payload=body, headers=request_headers, timeout=timeout)
     return json.loads(raw.decode("utf-8", errors="replace"))
 
-# ----------------- DOWNLOAD ENGINES (Instagram & TikTok) ----------------- #
 def download_instagram(url):
     ydl_opts = {'format': 'best', 'quiet': True, 'no_warnings': True}
     try:
@@ -369,7 +383,25 @@ def send_ai_response(chat_id: int, prompt: str, status_id: int) -> None:
         bot.edit_message_text(f"<b>AI assistant</b>\n\n{escape(text[:MAX_TEXT_LENGTH] or 'Response পাওয়া গেছে।')}", chat_id, status_id, parse_mode="HTML")
     except Exception as error:
         log("AI request failed: %s", error)
-        bot.edit_message_text("<b>AI assistant</b>\n\nഈ মুহূর্তে উত্তর আনা যায়নি। কিছুক্ষণ পর আবার চেষ্টা করুন।", chat_id, status_id, parse_mode="HTML")
+        bot.edit_message_text("<b>AI assistant</b>\n\nএই মুহূর্তে উত্তর আনা যায়নি। কিছুক্ষণ পর আবার চেষ্টা করুন।", chat_id, status_id, parse_mode="HTML")
+
+# ----------------- DYNAMIC BOT SPAWNER (CREATE BOT FEATURE) ----------------- #
+def run_dynamic_bot(new_token: str):
+    try:
+        dyn_bot = telebot.TeleBot(new_token)
+
+        @dyn_bot.message_handler(commands=['start'])
+        def dyn_start(message):
+            dyn_bot.reply_to(message, "✨ *Welcome to your Custom 7G Bot!*\n\nPowered by 7G Ultimate Bot Engine (Credit: Amaz Uddin Abir).", parse_mode="Markdown")
+
+        @dyn_bot.message_handler(func=lambda msg: True)
+        def dyn_echo(message):
+            dyn_bot.reply_to(message, f"🤖 *Echo from Custom Bot:*\n{message.text}\n\n_Powered by 7G Ultimate Bot._", parse_mode="Markdown")
+
+        log("Dynamic Bot started successfully with token prefix: %s...", new_token[:10])
+        dyn_bot.infinity_polling(skip_pending=True)
+    except Exception as e:
+        log("Dynamic Bot Error with token %s: %s", new_token[:10], e)
 
 # ----------------- BOT COMMANDS & ADMIN MENUS ----------------- #
 
@@ -390,16 +422,24 @@ def send_welcome(message):
     markup.add(
         telebot.types.KeyboardButton("📊 My Stats"),
         telebot.types.KeyboardButton("🔗 Referral Link"),
-        telebot.types.KeyboardButton("✨ Features Guide")
+        telebot.types.KeyboardButton("✨ Create Bot")
     )
 
     welcome_text = (
         "✨🔥 *Welcome to 7G Ultimate Bot!* 🔥✨\n\n"
         "📥 *Instagram & TikTok:* Send any link for instant HD download!\n"
-        "🤖 *AI Assistant & Image Generation (/ai, /image)*\n\n"
+        "🤖 *AI Assistant & Image Generation (/ai, /image)*\n"
+        "✨ *Create Bot:* Spin up your own bot instantly using the menu below!\n\n"
         "👇 *Use the bottom menu for quick options!*"
     )
     bot.reply_to(message, welcome_text, reply_markup=markup, parse_mode="Markdown")
+
+@bot.message_handler(commands=['createbot'])
+def create_bot_command(message):
+    if is_banned(message.chat.id):
+        return
+    CHAT_MODES[message.chat.id] = "awaiting_token"
+    bot.reply_to(message, "🤖 *Create Your Own Bot*\n\nPlease send your new Telegram Bot Token (from @BotFather) to launch it instantly!", parse_mode="Markdown")
 
 @bot.message_handler(commands=['mystats'])
 def user_stats(message):
@@ -447,202 +487,4 @@ def show_stats(message):
         dl_count = info.get('downloads_count', 0)
         links = info.get('download_links', [])
         
-        stats_text += f"\n👤 *{escape(name)}* ({escape(uname)})\n🆔 ID: `{uid}`\n📥 Downloads: `{dl_count}`\n"
-        if links:
-            stats_text += "🔗 *Links:*\n"
-            for link in links[-5:]:
-                stats_text += f" - `{escape(link)}`\n"
-        stats_text += "-------------------\n"
-
-    if len(stats_text) > 4000:
-        for x in range(0, len(stats_text), 4000):
-            bot.send_message(message.chat.id, stats_text[x:x+4000], parse_mode="Markdown")
-    else:
-        bot.reply_to(message, stats_text, parse_mode="Markdown")
-
-@bot.message_handler(commands=['userinfo'])
-def specific_user_info(message):
-    if message.chat.id != ADMIN_ID:
-        return
-    try:
-        target_id = message.text.split()[1]
-        users_db = load_data(USER_FILE)
-        if target_id in users_db:
-            info = users_db[target_id]
-            links = info.get('download_links', [])
-            links_str = "\n".join([f"• `{escape(l)}`" for l in links]) if links else "No downloads yet."
-            
-            info_text = (
-                f"👤 *User Detailed History*\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📛 Name: {escape(info.get('first_name'))}\n"
-                f"🔗 Username: {escape(info.get('username'))}\n"
-                f"🆔 ID: `{target_id}`\n"
-                f"💬 Messages: `{info.get('msg_count')}`\n"
-                f"📥 Total Downloads: `{info.get('downloads_count')}`\n\n"
-                f"🔗 *All Downloaded Links:*\n{links_str}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━"
-            )
-            bot.reply_to(message, info_text, parse_mode="Markdown")
-        else:
-            bot.reply_to(message, "❌ *User ID not found in database.*", parse_mode="Markdown")
-    except Exception:
-        bot.reply_to(message, "⚠️ *Usage:* `/userinfo <user_id>`", parse_mode="Markdown")
-
-@bot.message_handler(commands=['maintenance'])
-def toggle_maintenance(message):
-    if message.chat.id != ADMIN_ID:
-        return
-    config = get_config()
-    current = config.get("maintenance", False)
-    config["maintenance"] = not current
-    save_data(CONFIG_FILE, config)
-    status = "ON 🛠️ (Bot is now locked for users)" if config["maintenance"] else "OFF ✅ (Bot is now running for everyone)"
-    bot.reply_to(message, f"🛠️ *Maintenance Mode is now {status}*", parse_mode="Markdown")
-
-@bot.message_handler(commands=['ban'])
-def ban_user(message):
-    if message.chat.id != ADMIN_ID:
-        return
-    try:
-        target_id = str(message.text.split()[1])
-        banned_list = load_data(BANNED_FILE)
-        if not isinstance(banned_list, list):
-            banned_list = []
-        if target_id not in [str(u) for u in banned_list]:
-            banned_list.append(target_id)
-            save_data(BANNED_FILE, banned_list)
-            bot.reply_to(message, f"✅ *User ID `{target_id}` has been successfully banned!*", parse_mode="Markdown")
-        else:
-            bot.reply_to(message, f"⚠️ *User ID `{target_id}` is already in the ban list.*", parse_mode="Markdown")
-    except Exception:
-        bot.reply_to(message, "⚠️ *Usage:* `/ban <user_id>`", parse_mode="Markdown")
-
-@bot.message_handler(commands=['unban'])
-def unban_user(message):
-    if message.chat.id != ADMIN_ID:
-        return
-    try:
-        target_id = str(message.text.split()[1])
-        banned_list = load_data(BANNED_FILE)
-        if not isinstance(banned_list, list):
-            banned_list = []
-        banned_list = [str(u) for u in banned_list]
-        if target_id in banned_list:
-            banned_list.remove(target_id)
-            save_data(BANNED_FILE, banned_list)
-            bot.reply_to(message, f"✅ *User ID `{target_id}` has been unbanned!*", parse_mode="Markdown")
-        else:
-            bot.reply_to(message, f"⚠️ *User ID `{target_id}` was not banned.*", parse_mode="Markdown")
-    except Exception:
-        bot.reply_to(message, "⚠️ *Usage:* `/unban <user_id>`", parse_mode="Markdown")
-
-@bot.message_handler(commands=['broadcast'])
-def broadcast_message(message):
-    if message.chat.id != ADMIN_ID:
-        return
-    msg_to_send = message.text.replace("/broadcast", "").strip()
-    if not msg_to_send:
-        bot.reply_to(message, "⚠️ *Usage:* `/broadcast Your message here`", parse_mode="Markdown")
-        return
-    users_db = load_data(USER_FILE)
-    if not users_db:
-        bot.reply_to(message, "❌ *No users found in database.*", parse_mode="Markdown")
-        return
-    sent, failed = 0, 0
-    for uid in users_db.keys():
-        try:
-            bot.send_message(uid, f"📢 *Admin Announcement:*\n\n{msg_to_send}", parse_mode="Markdown")
-            sent += 1
-        except Exception:
-            failed += 1
-    bot.reply_to(message, f"✅ *Broadcast Finished!*\n🟢 Sent: `{sent}`\n🔴 Failed: `{failed}`", parse_mode="Markdown")
-
-# ----------------- MESSAGE & LINK HANDLER ----------------- #
-@bot.message_handler(func=lambda message: True)
-def process_link(message):
-    if is_banned(message.chat.id):
-        bot.reply_to(message, "❌ *You are banned from using this bot!*", parse_mode="Markdown")
-        return
-
-    config = get_config()
-    if config.get("maintenance", False) and message.chat.id != ADMIN_ID:
-        bot.reply_to(message, "🛠️ *Bot is under maintenance! Please try again later.*", parse_mode="Markdown")
-        return
-
-    text = message.text.strip()
-
-    if text == "📊 My Stats":
-        user_stats(message)
-        return
-    elif text == "🔗 Referral Link":
-        bot_username = bot.get_me().username
-        ref_link = f"https://t.me/{bot_username}?start={message.chat.id}"
-        bot.reply_to(message, f"👥 *Your Personal Referral Link:*\n`{ref_link}`\n\n_Share this link with your friends to invite them!_ ✨", parse_mode="Markdown")
-        return
-    elif text == "✨ Features Guide":
-        help_text = (
-            "📌 *7G Bot Features Guide:*\n"
-            "1. **Instagram & TikTok:** Send any link to download videos instantly.\n"
-            "2. **AI Assistant:** Type anything or use `/ai <prompt>`.\n"
-            "3. **Image Gen:** Type `/image <prompt>` to generate AI images."
-        )
-        bot.reply_to(message, help_text, parse_mode="Markdown")
-        return
-
-    if text.startswith("/ai"):
-        prompt = text[len("/ai"):].strip()
-        if prompt:
-            status_msg = bot.reply_to(message, "💭 Thinking....")
-            EXECUTOR.submit(send_ai_response, message.chat.id, prompt, status_msg.message_id)
-        else:
-            bot.reply_to(message, "⚠️ *Usage:* `/ai Your question here`", parse_mode="Markdown")
-        return
-
-    if text.startswith("/image"):
-        prompt = text[len("/image"):].strip()
-        if prompt:
-            status_msg = bot.reply_to(message, "AI image তৈরি করছি…")
-            EXECUTOR.submit(send_ai_response, message.chat.id, f"/image {prompt}", status_msg.message_id)
-        else:
-            bot.reply_to(message, "⚠️ *Usage:* `/image a beautiful landscape`", parse_mode="Markdown")
-        return
-
-    # Instagram Handling
-    if "instagram.com" in text.lower():
-        track_user_activity(message.from_user, "Instagram Download Request", text)
-        status_msg = bot.reply_to(message, "⏳ *Downloading Instagram media, please hold on...* 🚀", parse_mode="Markdown")
-        video_url = download_instagram(text)
-        if video_url:
-            try:
-                bot.send_video(message.chat.id, video_url, caption="📥 *Downloaded via 7G Bot*", parse_mode="Markdown")
-                bot.delete_message(message.chat.id, status_msg.message_id)
-            except Exception:
-                bot.edit_message_text("❌ *Video file is too large or failed to send.*", message.chat.id, status_msg.message_id, parse_mode="Markdown")
-        else:
-            bot.edit_message_text("❌ *Instagram download failed. Try another link!*", message.chat.id, status_msg.message_id, parse_mode="Markdown")
-
-    # TikTok Handling (Using Advanced TikWM & SnapTik Resolver)
-    elif "tiktok.com" in text.lower() or "vt.tiktok.com" in text.lower():
-        track_user_activity(message.from_user, "TikTok Download Request", text)
-        status_msg = bot.reply_to(message, "⏳ *Downloading TikTok video without watermark...* 🎵", parse_mode="Markdown")
-        try:
-            title, options = tiktok_info(text)
-            if options:
-                video_url = options[0]["url"]
-                bot.send_video(message.chat.id, video_url, caption=f"📥 <b>{escape(title[:200])}</b>\n⚡ <i>Downloaded via 7G Bot</i>", parse_mode="HTML")
-                bot.delete_message(message.chat.id, status_msg.message_id)
-            else:
-                bot.edit_message_text("❌ *Failed to fetch TikTok download link.*", message.chat.id, status_msg.message_id, parse_mode="Markdown")
-        except Exception as e:
-            bot.edit_message_text(f"❌ *Error:* {escape(str(e))}", message.chat.id, status_msg.message_id, parse_mode="Markdown")
-
-    else:
-        track_user_activity(message.from_user, "General AI Chat Message", text)
-        status_msg = bot.reply_to(message, "💭 Thinking....")
-        EXECUTOR.submit(send_ai_response, message.chat.id, text, status_msg.message_id)
-
-# ----------------- MAIN RUNNER ----------------- #
-if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
-    bot.infinity_polling()
+        stats_text += f"\n👤 *{escape(name)}* ({escape(uname)})\n🆔 ID: `{uid}`\n📥 Downlo
