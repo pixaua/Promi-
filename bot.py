@@ -1,575 +1,490 @@
+"""
+=============================================================================
+7G ULTIMATE TELEGRAM BOT (REFACTORED & ENHANCED PRODUCTION VERSION)
+=============================================================================
+Features:
+  - Instagram Video/Reel Downloader (yt-dlp + VKR fallback)
+  - Multi-Tier TikTok HD Downloader (TikWM Watermark-Free + Fallback API + yt-dlp)
+  - Meta AI Chat Assistant & Image Generation (/ai, /image)
+  - Advanced User Activity Tracking (Messages, Download Links, Referrals)
+  - Admin Dashboard (/stats, /users) with Serialized History & Smart Pagination
+  - Single User Deep Inspection (/userinfo <user_id>)
+  - System Maintenance Mode (/maintenance) with Instant Automatic User Broadcast
+  - Ban & Unban System (/ban, /unban) with Mandatory User Notifications
+  - Admin Broadcast Engine (/broadcast <message>) with Delivery Counter
+  - Flask Keep-Alive Server for 24/7 Hosting (Render, Railway, VPS, Heroku)
+=============================================================================
+"""
 
 from __future__ import annotations
 
-import os
-import threading
-import requests
-from datetime import datetime
+import base64
+import html
 import json
+import logging
+import os
 import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
+
+import requests
 from flask import Flask
 import telebot
 import yt_dlp
 
-app = Flask(__name__)
+# ----------------- LOGGING CONFIGURATION ----------------- #
+LOG = logging.getLogger("streamly_7g")
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
-@app.route('/')
-def home():
-    return "✨ 7G Main Bot is Online & Running!"
+def log(message: str, *args: Any) -> None:
+    LOG.info(message, *args)
 
-@app.route('/health')
-def health():
-    return "OK", 200
+def log_error(message: str, *args: Any) -> None:
+    LOG.error(message, *args)
 
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+# ----------------- ENVIRONMENT & CONFIGURATION ----------------- #
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAHG-u-pezwx3Cj-EF7koKwYZXDSZ55KENs").strip()
+ADMIN_ID = int(os.getenv("ADMIN_ID", "6162953772"))
+META_AI_KEY = os.getenv("META_AI_API_KEY", "nxt_3a454c41e6a84aeead28d1fb4aec87a4").strip()
 
-# ----------------- CONFIGURATION ----------------- #
-BOT_TOKEN = "7678905793:AAGNMxC34F2dQ8bgojFAyGApeHA20Yk_8gI"  # Telegram Bot Token
-ADMIN_ID = 6162953772                # Admin User ID
+META_AI_GEM_ID = os.getenv("META_AI_GEM_ID", "ba0fbe0d-976e-493a-afdb-6d8469e53df0")
+META_AI_ENDPOINT = f"https://nxtai.zipohostbd.workers.dev/api/use?gem={META_AI_GEM_ID}"
+IMAGE_FALLBACK_ENDPOINT = "https://image.pollinations.ai/prompt/"
+TIKWM_ENDPOINT = "https://www.tikwm.com/api/"
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36"
+)
+
+MAX_TEXT_LENGTH = 3900
+TELEGRAM_CHUNK_LIMIT = 3900  # Below Telegram's 4096 character limit for safety
 
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 USER_FILE = os.path.join(DATA_DIR, "users_db.json")
 BANNED_FILE = os.path.join(DATA_DIR, "banned_users.json")
 CONFIG_FILE = os.path.join(DATA_DIR, "bot_config.json")
-CLONED_BOTS_FILE = os.path.join(DATA_DIR, "cloned_bots.json")
 
-main_bot = telebot.TeleBot(BOT_TOKEN)
-RUNNING_CLONES = {}
+# Initialize TeleBot and Flask Web Server
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
+app = Flask(__name__)
 
-# ----------------- DATABASE MANAGEMENT WITH TELEGRAM BACKUP ----------------- #
-def load_data(filepath):
-    if not os.path.exists(filepath):
-        return {} if "users" in filepath or "config" in filepath else []
+# Concurrency & Synchronization
+FILE_LOCK = threading.RLock()
+EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="7g_worker")
+
+# ----------------- FLASK KEEP-ALIVE SERVER ----------------- #
+@app.route("/")
+def home():
+    return "✨ 7G Main Bot is Online & Running 24/7!"
+
+@app.route("/healthz")
+def healthz():
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+
+def run_flask():
+    """Runs lightweight web server to satisfy hosting port bindings (Render/Railway)."""
+    port = int(os.environ.get("PORT", 10000))
+    log(f"Starting Flask keep-alive server on port {port}...")
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {} if "users" in filepath or "config" in filepath else []
-
-def save_data(filepath, data, active_bot=None):
-    try:
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-        
-        if "users_db.json" in filepath:
-            try:
-                target_bot = active_bot if active_bot else main_bot
-                with open(filepath, "rb") as bf:
-                    target_bot.send_document(ADMIN_ID, bf, caption="🛡️ *Auto Telegram Database Backup Sync* ✨", parse_mode="Markdown")
-            except Exception:
-                pass
+        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
     except Exception as e:
-        print(f"Data Save Error: {e}")
+        log_error("Flask server encountered error: %s", e)
 
-def get_config():
+# ----------------- UTILITY FUNCTIONS ----------------- #
+def escape(value: Any) -> str:
+    return html.escape(str(value or ""), quote=False)
+
+def escape_markdown(text: Any) -> str:
+    s = str(text or "")
+    for ch in ("_", "*", "`", "[", "]"):
+        s = s.replace(ch, f"\\{ch}")
+    return s
+
+def chunk_and_send(chat_id: int, text: str, parse_mode: str = "Markdown") -> None:
+    if not text:
+        return
+    if len(text) <= TELEGRAM_CHUNK_LIMIT:
+        try:
+            bot.send_message(chat_id, text, parse_mode=parse_mode)
+        except Exception:
+            bot.send_message(chat_id, text)
+        return
+
+    lines = text.split("\n")
+    current_chunk: list[str] = []
+    current_length = 0
+
+    for line in lines:
+        if current_length + len(line) + 1 > TELEGRAM_CHUNK_LIMIT:
+            chunk_body = "\n".join(current_chunk)
+            try:
+                bot.send_message(chat_id, chunk_body, parse_mode=parse_mode)
+            except Exception:
+                bot.send_message(chat_id, chunk_body)
+            time.sleep(0.3)
+            current_chunk = [line]
+            current_length = len(line) + 1
+        else:
+            current_chunk.append(line)
+            current_length += len(line) + 1
+
+    if current_chunk:
+        chunk_body = "\n".join(current_chunk)
+        try:
+            bot.send_message(chat_id, chunk_body, parse_mode=parse_mode)
+        except Exception:
+            bot.send_message(chat_id, chunk_body)
+
+# ----------------- DATABASE MANAGEMENT (THREAD-SAFE) ----------------- #
+def load_data(filepath: str) -> Any:
+    with FILE_LOCK:
+        if not os.path.exists(filepath):
+            return {} if "users" in filepath or "config" in filepath else []
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            log_error(f"Error reading {filepath}: {e}")
+            return {} if "users" in filepath or "config" in filepath else []
+
+def save_data(filepath: str, data: Any) -> None:
+    with FILE_LOCK:
+        try:
+            temp_path = f"{filepath}.tmp"
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(temp_path, filepath)
+        except Exception as e:
+            log_error(f"Data Save Error on {filepath}: {e}")
+
+def get_config() -> dict[str, Any]:
     config = load_data(CONFIG_FILE)
     if not isinstance(config, dict):
         config = {"maintenance": False}
         save_data(CONFIG_FILE, config)
     return config
 
-def is_banned(user_id):
+def is_banned(user_id: int | str) -> bool:
     banned_list = load_data(BANNED_FILE)
     if not isinstance(banned_list, list):
         banned_list = []
     return str(user_id) in [str(u) for u in banned_list]
 
-def track_user_activity(user, action_type, text_data="", referred_by=None, active_bot=None):
+def track_user_activity(user: telebot.types.User, action_type: str, text_data: str = "", referred_by: str | None = None) -> None:
     user_id = str(user.id)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    users_db = load_data(USER_FILE)
-    if not isinstance(users_db, dict):
-        users_db = {}
-    
-    if user_id not in users_db:
-        users_db[user_id] = {
-            "first_name": user.first_name or "Unknown",
-            "username": f"@{user.username}" if user.username else "No Username",
-            "language_code": user.language_code or "N/A",
-            "first_seen": now_str,
-            "last_seen": now_str,
-            "msg_count": 1,
-            "downloads_count": 1 if "Download" in action_type else 0,
-            "download_links": [text_data] if "Download" in action_type and text_data else [],
-            "messages_list": [text_data] if "Message" in action_type and text_data else [],
-            "referred_by": referred_by,
-            "referrals": [],
-            "points": 0
-        }
-        if referred_by and referred_by in users_db and referred_by != user_id:
-            users_db[referred_by]["referrals"].append(user_id)
-            users_db[referred_by]["points"] = users_db[referred_by].get("points", 0) + 1
-    else:
-        users_db[user_id]["last_seen"] = now_str
-        users_db[user_id]["msg_count"] += 1
-        if user.first_name:
-            users_db[user_id]["first_name"] = user.first_name
-        if user.username:
-            users_db[user_id]["username"] = f"@{user.username}"
-        if user.language_code:
-            users_db[user_id]["language_code"] = user.language_code
-        
-        if "Download" in action_type:
-            users_db[user_id]["downloads_count"] = users_db[user_id].get("downloads_count", 0) + 1
-            if text_data:
-                if "download_links" not in users_db[user_id]:
-                    users_db[user_id]["download_links"] = []
-                users_db[user_id]["download_links"].append(text_data)
-        
-        if "Message" in action_type and text_data:
-            if "messages_list" not in users_db[user_id]:
-                users_db[user_id]["messages_list"] = []
-            users_db[user_id]["messages_list"].append(text_data)
 
-    save_data(USER_FILE, users_db, active_bot)
-    send_admin_alert(user, action_type, text_data, users_db[user_id], active_bot)
+    with FILE_LOCK:
+        users_db = load_data(USER_FILE)
+        if not isinstance(users_db, dict):
+            users_db = {}
 
-def send_admin_alert(user, action_type, text_data, user_info, active_bot=None):
+        if user_id not in users_db:
+            users_db[user_id] = {
+                "first_name": user.first_name or "Unknown",
+                "username": f"@{user.username}" if user.username else "No Username",
+                "language_code": getattr(user, "language_code", None) or "N/A",
+                "first_seen": now_str,
+                "last_seen": now_str,
+                "msg_count": 1,
+                "downloads_count": 1 if "Download" in action_type else 0,
+                "messages": [text_data] if text_data and "Download" not in action_type else [],
+                "download_links": [text_data] if ("Download" in action_type and text_data) else [],
+                "referred_by": referred_by,
+                "referrals": [],
+                "points": 0,
+            }
+        else:
+            profile = users_db[user_id]
+            profile["last_seen"] = now_str
+            profile["msg_count"] = profile.get("msg_count", 0) + 1
+            if user.first_name:
+                profile["first_name"] = user.first_name
+            if user.username:
+                profile["username"] = f"@{user.username}"
+
+            if "messages" not in profile or not isinstance(profile["messages"], list):
+                profile["messages"] = []
+            if "download_links" not in profile or not isinstance(profile["download_links"], list):
+                profile["download_links"] = []
+
+            if "Download" in action_type:
+                profile["downloads_count"] = profile.get("downloads_count", 0) + 1
+                if text_data:
+                    profile["download_links"].append(text_data)
+            else:
+                if text_data:
+                    profile["messages"].append(text_data)
+
+        save_data(USER_FILE, users_db)
+
+    EXECUTOR.submit(send_admin_alert, user, action_type, text_data, users_db[user_id])
+
+def send_admin_alert(user: telebot.types.User, action_type: str, text_data: str, user_info: dict[str, Any]) -> None:
     try:
-        target_bot = active_bot if active_bot else main_bot
+        preview_data = text_data[:300] + ("..." if len(text_data) > 300 else "")
         alert_msg = (
-            f"🚨 *New Bot Activity Alert!*\n"
+            f"🚨 *Bot Activity Alert*\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"👤 *Name:* {user_info['first_name']}\n"
-            f"🔗 *Username:* {user_info['username']}\n"
+            f"👤 *Name:* {escape_markdown(user_info.get('first_name', 'Unknown'))}\n"
+            f"🔗 *Username:* {escape_markdown(user_info.get('username', 'No Username'))}\n"
             f"🆔 *User ID:* `{user.id}`\n"
-            f"🌐 *Lang:* `{user_info['language_code']}`\n"
-            f"📅 *First Seen:* `{user_info['first_seen']}`\n"
-            f"🕒 *Last Seen:* `{user_info['last_seen']}`\n"
-            f"💬 *Total Messages:* `{user_info['msg_count']}`\n"
-            f"📥 *Total Downloads:* `{user_info['downloads_count']}`\n"
-            f"⚡ *Action:* {action_type}\n"
-            f"📌 *Data/Link:* {text_data}\n"
+            f"💬 *Total Messages:* `{user_info.get('msg_count', 0)}`\n"
+            f"📥 *Total Downloads:* `{user_info.get('downloads_count', 0)}`\n"
+            f"⚡ *Action:* {escape_markdown(action_type)}\n"
+            f"📌 *Data:* `{escape_markdown(preview_data)}`\n"
             f"━━━━━━━━━━━━━━━━━━━━━"
         )
-        target_bot.send_message(ADMIN_ID, alert_msg, parse_mode="Markdown")
+        bot.send_message(ADMIN_ID, alert_msg, parse_mode="Markdown")
     except Exception as e:
-        print(f"Admin Alert Error: {e}")
+        log_error("Failed to send admin activity alert: %s", e)
 
-# ----------------- ADVANCED DOWNLOAD ENGINES ----------------- #
-def download_instagram(url):
-    ydl_opts = {'format': 'best', 'quiet': True, 'no_warnings': True}
+# ----------------- DOWNLOAD ENGINES ----------------- #
+def download_instagram(url: str) -> str | None:
+    ydl_opts = {
+        "format": "best",
+        "quiet": True,
+        "no_warnings": True,
+        "simulate": True,
+    }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            if 'url' in info:
-                return info['url']
-            elif 'entries' in info and len(info['entries']) > 0:
-                return info['entries'][0]['url']
-    except Exception:
-        pass
+            if info:
+                if "url" in info:
+                    return info["url"]
+                elif "entries" in info and len(info["entries"]) > 0:
+                    entry = info["entries"][0]
+                    return entry.get("url") or entry.get("requested_formats", [{}])[0].get("url")
+    except Exception as e:
+        log("Instagram yt-dlp extractor attempt skipped: %s", e)
 
     clean_url = url.split("?")[0]
     try:
         api_url = f"https://api.vkrdown.com/insta/?url={clean_url}"
-        res = requests.get(api_url, timeout=10).json()
-        if "data" in res and res["data"]:
-            return res["data"][0].get("url")
-    except Exception:
-        pass
-
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        res = requests.get(f"https://tikwm.com/api/?url={url}", headers=headers, timeout=10).json()
-        if "data" in res and "play" in res["data"]:
-            return res["data"]["play"]
-    except Exception:
-        pass
-
-    return None
-
-def download_tiktok(url):
-    try:
-        api_url = f"https://www.tikwm.com/api/?url={url}"
-        res = requests.get(api_url, timeout=15).json()
-        if res.get("code") == 0 and "data" in res:
-            data = res["data"]
-            if "play" in data:
-                return data["play"]
-            elif "hdplay" in data:
-                return data["hdplay"]
-    except Exception:
-        pass
-
-    ydl_opts = {'format': 'best', 'quiet': True, 'no_warnings': True}
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if 'url' in info:
-                return info['url']
-    except Exception:
-        pass
-    return None
-
-# ----------------- BOT HANDLERS SETUP ----------------- #
-def setup_bot_handlers(target_bot: telebot.TeleBot, is_clone=False):
-
-    @target_bot.message_handler(commands=['start'])
-    def send_welcome(message):
-        if is_banned(message.chat.id):
-            target_bot.reply_to(message, "❌ *You are banned from using this bot!*", parse_mode="Markdown")
-            return
-
-        config = get_config()
-        if config.get("maintenance", False) and message.chat.id != ADMIN_ID:
-            target_bot.reply_to(message, "🛠️ *Bot is under maintenance! Please try again later.*", parse_mode="Markdown")
-            return
-
-        args = message.text.split()
-        referred_by = args[1] if len(args) > 1 else None
-
-        track_user_activity(message.from_user, "Start Command / New Visitor", message.text, referred_by, target_bot)
-
-        markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-        if not is_clone:
-            markup.add(
-                telebot.types.KeyboardButton("📊 My Stats"),
-                telebot.types.KeyboardButton("🔗 Referral Link"),
-                telebot.types.KeyboardButton("✨ Features Guide"),
-                telebot.types.KeyboardButton("🚀 Create Own Bot")
-            )
-        else:
-            markup.add(
-                telebot.types.KeyboardButton("📊 My Stats"),
-                telebot.types.KeyboardButton("🔗 Referral Link"),
-                telebot.types.KeyboardButton("✨ Features Guide")
-            )
-
-        welcome_text = (
-            "✨🔥 *Welcome to 7G Ultimate Bot!* 🔥✨\n\n"
-            "📥 *Instagram & TikTok:* Send any link for instant HD download!\n\n"
-            "👇 *Use the bottom menu for quick options!*"
-        )
-        target_bot.reply_to(message, welcome_text, reply_markup=markup, parse_mode="Markdown")
-
-    @target_bot.message_handler(commands=['mystats'])
-    def user_stats(message):
-        if is_banned(message.chat.id):
-            return
-        users_db = load_data(USER_FILE)
-        user_info = users_db.get(str(message.chat.id), {})
-        
-        msgs = user_info.get("msg_count", 0)
-        downloads = user_info.get("downloads_count", 0)
-        first_seen = user_info.get("first_seen", "N/A")
-        refs = len(user_info.get("referrals", []))
-        points = user_info.get("points", 0)
-        
-        stats_msg = (
-            f"📊 *Your Personal Bot Statistics* 🌟\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📅 *Joined Date:* `{first_seen}`\n"
-            f"💬 *Total Messages Sent:* `{msgs}`\n"
-            f"📥 *Total Videos Downloaded:* `{downloads}`\n"
-            f"👥 *Total Referrals:* `{refs}` (Points: `{points}`)\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚡ *Thanks for using 7G Bot!* ❤️"
-        )
-        target_bot.reply_to(message, stats_msg, parse_mode="Markdown")
-
-    @target_bot.message_handler(commands=['stats', 'users'])
-    def show_stats(message):
-        if message.chat.id != ADMIN_ID:
-            return
-
-        users_db = load_data(USER_FILE)
-        total_users = len(users_db)
-        total_downloads = sum(u.get("downloads_count", 0) for u in users_db.values())
-
-        user_summaries = []
-        for uid, info in users_db.items():
-            msgs_list = info.get("messages_list", [])
-            links_list = info.get("download_links", [])
-
-            if msgs_list:
-                msgs_str = "\n".join([f"   {i+1}. `{m}`" for i, m in enumerate(msgs_list)])
-            else:
-                msgs_str = "   • No messages recorded."
-
-            if links_list:
-                links_str = "\n".join([f"   {i+1}. `{l}`" for i, l in enumerate(links_list)])
-            else:
-                links_str = "   • No downloads yet."
-
-            user_summaries.append(
-                f"👤 *Name:* {info.get('first_name')} (ID: `{uid}`)\n"
-                f"🔗 *Username:* {info.get('username')}\n"
-                f"📥 *Downloads Count:* `{info.get('downloads_count')}` | 💬 *Messages Count:* `{info.get('msg_count')}`\n\n"
-                f"💬 *Messages List:*\n{msgs_str}\n\n"
-                f"📌 *Downloaded Links List:*\n{links_str}\n"
-                f"----------------------------------------"
-            )
-
-        users_text = "\n\n".join(user_summaries) if user_summaries else "No user records found."
-
-        if len(users_text) > 3800:
-            chunks = [users_text[i:i+3800] for i in range(0, len(users_text), 3800)]
-            target_bot.reply_to(message, f"📊 *Admin Dashboard Statistics*\n👥 Total Users: `{total_users}`\n📥 Total Downloads: `{total_downloads}`", parse_mode="Markdown")
-            for chunk in chunks:
-                target_bot.send_message(ADMIN_ID, chunk, parse_mode="Markdown")
-        else:
-            stats_text = (
-                f"📊 *Admin Dashboard Statistics*\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"👥 *Total Users:* `{total_users}`\n"
-                f"📥 *Total Downloads:* `{total_downloads}`\n\n"
-                f"📋 *All Users Messages & Downloaded Links History:*\n\n{users_text}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━"
-            )
-            target_bot.reply_to(message, stats_text, parse_mode="Markdown")
-
-    @target_bot.message_handler(commands=['userinfo'])
-    def specific_user_info(message):
-        if message.chat.id != ADMIN_ID:
-            return
-        try:
-            target_id = message.text.split()[1]
-            users_db = load_data(USER_FILE)
-            if target_id in users_db:
-                info = users_db[target_id]
-                msgs_list = info.get('messages_list', [])
-                links_list = info.get('download_links', [])
-
-                msgs_str = "\n".join([f"   {i+1}. `{m}`" for i, m in enumerate(msgs_list)]) if msgs_list else "   • No messages."
-                links_str = "\n".join([f"   {i+1}. `{l}`" for i, l in enumerate(links_list)]) if links_list else "   • No downloads."
-
-                info_text = (
-                    f"👤 *User Detailed History*\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📛 Name: {info.get('first_name')}\n"
-                    f"🔗 Username: {info.get('username')}\n"
-                    f"🆔 ID: `{target_id}`\n"
-                    f"🌐 Lang: `{info.get('language_code')}`\n"
-                    f"📅 First Seen: `{info.get('first_seen')}`\n"
-                    f"🕒 Last Seen: `{info.get('last_seen')}`\n"
-                    f"💬 Messages: `{info.get('msg_count')}`\n"
-                    f"📥 Total Downloads: `{info.get('downloads_count')}`\n\n"
-                    f"💬 *Messages List:*\n{msgs_str}\n\n"
-                    f"🔗 *Downloaded Links List:*\n{links_str}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━"
-                )
-                target_bot.reply_to(message, info_text, parse_mode="Markdown")
-            else:
-                target_bot.reply_to(message, "❌ *User ID not found in database.*", parse_mode="Markdown")
-        except Exception:
-            target_bot.reply_to(message, "⚠️ *Usage:* `/userinfo <user_id>`", parse_mode="Markdown")
-
-    @target_bot.message_handler(commands=['maintenance'])
-    def toggle_maintenance(message):
-        if message.chat.id != ADMIN_ID:
-            return
-        config = get_config()
-        current = config.get("maintenance", False)
-        config["maintenance"] = not current
-        save_data(CONFIG_FILE, config)
-        status = "ON 🛠️ (Bot is now locked for users)" if config["maintenance"] else "OFF ✅ (Bot is now running for everyone)"
-        target_bot.reply_to(message, f"🛠️ *Maintenance Mode is now {status}*", parse_mode="Markdown")
-
-        if config["maintenance"]:
-            users_db = load_data(USER_FILE)
-            for uid in users_db.keys():
-                try:
-                    target_bot.send_message(
-                        uid,
-                        "⚠️ *Notice:* The bot is currently undergoing maintenance and will be temporarily unavailable. We will be back online soon!",
-                        parse_mode="Markdown"
-                    )
-                except Exception:
-                    pass
-
-    @target_bot.message_handler(commands=['ban'])
-    def ban_user(message):
-        if message.chat.id != ADMIN_ID:
-            return
-        try:
-            target_id = str(message.text.split()[1])
-            banned_list = load_data(BANNED_FILE)
-            if not isinstance(banned_list, list):
-                banned_list = []
-            if target_id not in [str(u) for u in banned_list]:
-                banned_list.append(target_id)
-                save_data(BANNED_FILE, banned_list)
-                target_bot.reply_to(message, f"✅ *User ID `{target_id}` has been successfully banned!*", parse_mode="Markdown")
-            else:
-                target_bot.reply_to(message, f"⚠️ *User ID `{target_id}` is already in the ban list.*", parse_mode="Markdown")
-        except Exception:
-            target_bot.reply_to(message, "⚠️ *Usage:* `/ban <user_id>`", parse_mode="Markdown")
-
-    @target_bot.message_handler(commands=['unban'])
-    def unban_user(message):
-        if message.chat.id != ADMIN_ID:
-            return
-        try:
-            target_id = str(message.text.split()[1])
-            banned_list = load_data(BANNED_FILE)
-            if not isinstance(banned_list, list):
-                banned_list = []
-            banned_list = [str(u) for u in banned_list]
-            if target_id in banned_list:
-                banned_list.remove(target_id)
-                save_data(BANNED_FILE, banned_list)
-                target_bot.reply_to(message, f"✅ *User ID `{target_id}` has been unbanned!*", parse_mode="Markdown")
-            else:
-                target_bot.reply_to(message, f"⚠️ *User ID `{target_id}` was not banned.*", parse_mode="Markdown")
-        except Exception:
-            target_bot.reply_to(message, "⚠️ *Usage:* `/unban <user_id>`", parse_mode="Markdown")
-
-    @target_bot.message_handler(commands=['broadcast'])
-    def broadcast_message(message):
-        if message.chat.id != ADMIN_ID:
-            return
-
-        msg_to_send = message.text.replace("/broadcast", "").strip()
-        if not msg_to_send:
-            target_bot.reply_to(message, "⚠️ *Usage:* `/broadcast Your message here`", parse_mode="Markdown")
-            return
-
-        users_db = load_data(USER_FILE)
-        if not users_db:
-            target_bot.reply_to(message, "❌ *No users found in database.*", parse_mode="Markdown")
-            return
-
-        sent = 0
-        failed = 0
-        for uid in users_db.keys():
-            try:
-                target_bot.send_message(uid, f"📢 *Admin Announcement:*\n\n{msg_to_send}", parse_mode="Markdown")
-                sent += 1
-            except Exception:
-                failed += 1
-
-        target_bot.reply_to(message, f"✅ *Broadcast Finished!*\n🟢 Sent: `{sent}`\n🔴 Failed: `{failed}`", parse_mode="Markdown")
-
-    # ----------------- MESSAGE & LINK HANDLER ----------------- #
-    @target_bot.message_handler(func=lambda message: True)
-    def process_link(message):
-        if is_banned(message.chat.id):
-            target_bot.reply_to(message, "❌ *You are banned from using this bot!*", parse_mode="Markdown")
-            return
-
-        config = get_config()
-        if config.get("maintenance", False) and message.chat.id != ADMIN_ID:
-            target_bot.reply_to(message, "🛠️ *Bot is under maintenance! Please try again later.*", parse_mode="Markdown")
-            return
-
-        text = message.text.strip()
-
-        if text == "📊 My Stats":
-            user_stats(message)
-            return
-        elif text == "🔗 Referral Link":
-            bot_username = target_bot.get_me().username
-            ref_link = f"https://t.me/{bot_username}?start={message.chat.id}"
-            target_bot.reply_to(message, f"👥 *Your Personal Referral Link:*\n`{ref_link}`\n\n_Share this link with your friends to invite them!_ ✨", parse_mode="Markdown")
-            return
-        elif text == "✨ Features Guide":
-            help_text = (
-                "📌 *7G Bot Features Guide:*\n"
-                "1. **Instagram & TikTok:** Send any link to download videos instantly.\n"
-                "2. **Menu Buttons:** Easily check your personal stats or get your invite link."
-            )
-            target_bot.reply_to(message, help_text, parse_mode="Markdown")
-            return
-        elif text == "🚀 Create Own Bot" and not is_clone:
-            target_bot.reply_to(message, "🤖 *Send your Telegram Bot Token now!*\n\nPaste your token here to make your bot live instantly!", parse_mode="Markdown")
-            return
-
-        if not is_clone and re.match(r'^\d{8,11}:[A-Za-z0-9_-]{35,}$', text):
-            status_msg = target_bot.reply_to(message, "⚡ *Connecting & Deploying Your Bot Token...*", parse_mode="Markdown")
-            success, msg = deploy_cloned_bot(text, message.chat.id)
-            target_bot.edit_message_text(msg, message.chat.id, status_msg.message_id, parse_mode="Markdown")
-            return
-
-        # Instagram Handling
-        if "instagram.com" in text.lower():
-            track_user_activity(message.from_user, "Instagram Download Request", text, active_bot=target_bot)
-            status_msg = target_bot.reply_to(message, "⏳ *Downloading Instagram media, please hold on...* 🚀", parse_mode="Markdown")
-            caption_text = "📥 *Downloaded via Bot*\n⚡ *Fast & High Quality* ✨"
-
-            video_url = download_instagram(text)
-            if video_url:
-                try:
-                    target_bot.send_video(message.chat.id, video_url, caption=caption_text, parse_mode="Markdown")
-                    target_bot.delete_message(message.chat.id, status_msg.message_id)
-                except Exception:
-                    target_bot.edit_message_text("❌ *Video file is too large or failed to send.*", message.chat.id, status_msg.message_id, parse_mode="Markdown")
-            else:
-                target_bot.edit_message_text("❌ *Unfortunately, nothing was found or Instagram blocked the request. Try another link! 🥺*", message.chat.id, status_msg.message_id, parse_mode="Markdown")
-
-        # TikTok Handling
-        elif "tiktok.com" in text.lower() or "vt.tiktok.com" in text.lower():
-            track_user_activity(message.from_user, "TikTok Download Request", text, active_bot=target_bot)
-            status_msg = target_bot.reply_to(message, "⏳ *Downloading TikTok video without watermark...* 🎵", parse_mode="Markdown")
-            caption_text = "📥 *Downloaded via Bot*\n🎵 *TikTok HD No-Watermark* ✨"
-
-            video_url = download_tiktok(text)
-            if video_url:
-                try:
-                    target_bot.send_video(message.chat.id, video_url, caption=caption_text, parse_mode="Markdown")
-                    target_bot.delete_message(message.chat.id, status_msg.message_id)
-                except Exception:
-                    target_bot.edit_message_text("❌ *Video file is too large or failed to send.*", message.chat.id, status_msg.message_id, parse_mode="Markdown")
-            else:
-                target_bot.edit_message_text("❌ *Failed to fetch TikTok video 🥺*", message.chat.id, status_msg.message_id, parse_mode="Markdown")
-
-        else:
-            track_user_activity(message.from_user, "General User Message", text, active_bot=target_bot)
-            target_bot.reply_to(message, "⚠️ *Message saved! Please send a valid Instagram or TikTok link!* 📌", parse_mode="Markdown")
-
-# ----------------- MULTI-BOT AUTO-CLONE ENGINE ----------------- #
-def deploy_cloned_bot(token: str, owner_id: int):
-    token = token.strip()
-    try:
-        temp_bot = telebot.TeleBot(token)
-        bot_info = temp_bot.get_me()
-        bot_username = bot_info.username
-        
-        cloned_bots = load_data(CLONED_BOTS_FILE)
-        if not isinstance(cloned_bots, dict):
-            cloned_bots = {}
-        
-        cloned_bots[token] = {
-            "owner_id": owner_id,
-            "username": bot_username,
-            "added_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        save_data(CLONED_BOTS_FILE, cloned_bots)
-        
-        if token not in RUNNING_CLONES:
-            setup_bot_handlers(temp_bot, is_clone=True)
-            t = threading.Thread(target=temp_bot.infinity_polling, daemon=True)
-            t.start()
-            RUNNING_CLONES[token] = t
-
-        return True, f"🎉 *Success! Your Bot is now LIVE!*\n\n🤖 *Bot Username:* @{bot_username}\n✨ Anyone can now use @{bot_username} to download videos!"
-    
+        res = requests.get(api_url, timeout=12).json()
+        if isinstance(res, dict) and "data" in res and res["data"]:
+            first_media = res["data"][0]
+            if isinstance(first_media, dict) and first_media.get("url"):
+                return first_media.get("url")
     except Exception as e:
-        print(f"Clone Deploy Error: {e}")
-        return False, "❌ *Invalid Bot Token!* Please send a valid Telegram Bot Token from @BotFather."
+        log_error("Instagram VKR fallback failed: %s", e)
 
-def start_all_saved_clones():
-    cloned_bots = load_data(CLONED_BOTS_FILE)
-    if isinstance(cloned_bots, dict):
-        for token in cloned_bots.keys():
-            try:
-                c_bot = telebot.TeleBot(token)
-                setup_bot_handlers(c_bot, is_clone=True)
-                t = threading.Thread(target=c_bot.infinity_polling, daemon=True)
-                t.start()
-                RUNNING_CLONES[token] = t
-            except Exception as e:
-                print(f"Failed to start saved clone {token[:10]}: {e}")
+    return None
 
-# ----------------- MAIN RUNNER ----------------- #
+def resolve_tiktok_tikwm(source_url: str) -> tuple[str, str]:
+    endpoint = f"{TIKWM_ENDPOINT}?{urlencode({'url': source_url, 'hd': '1'})}"
+    response = json_request(endpoint, timeout=30)
+    if not isinstance(response, dict):
+        raise RuntimeError("TikWM returned invalid response")
+
+    code = response.get("code")
+    if code not in (0, "0", None):
+        msg = response.get("msg") or "TikWM service error"
+        raise RuntimeError(f"TikWM error: {msg}")
+
+    data = response.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError("TikWM returned empty payload")
+
+    title = str(data.get("title") or "TikTok Video")
+    video_url = data.get("hdplay") or data.get("play") or data.get("wmplay")
+    if not video_url:
+        raise RuntimeError("TikWM did not contain a valid video link")
+
+    return title, video_url
+
+def resolve_tiktok_fallback_api(source_url: str) -> tuple[str, str]:
+    endpoint = f"https://api.tiklydown.eu.org/api/download?url={quote(source_url)}"
+    headers = {"User-Agent": USER_AGENT}
+    res = requests.get(endpoint, headers=headers, timeout=25)
+    if res.status_code == 200:
+        data = res.json()
+        title = data.get("title") or "TikTok Video"
+        video_url = data.get("video", {}).get("noWatermark") or data.get("video", {}).get("watermark")
+        if video_url:
+            return title, video_url
+
+    raise RuntimeError("Secondary TikTok API could not resolve this URL")
+
+def resolve_tiktok_ytdlp(source_url: str) -> tuple[str, str]:
+    ydl_opts = {
+        "format": "best[ext=mp4]/best",
+        "quiet": True,
+        "no_warnings": True,
+        "simulate": True,
+        "http_headers": {"User-Agent": USER_AGENT},
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(source_url, download=False)
+        if not info:
+            raise RuntimeError("yt-dlp returned no video info")
+        title = info.get("title") or "TikTok Video"
+        url = info.get("url")
+        if url:
+            return title, url
+
+    raise RuntimeError("yt-dlp extraction failed for TikTok")
+
+def download_tiktok(source_url: str) -> tuple[str, str]:
+    errors: list[str] = []
+    try:
+        return resolve_tiktok_tikwm(source_url)
+    except Exception as e:
+        errors.append(f"TikWM: {e}")
+
+    try:
+        return resolve_tiktok_fallback_api(source_url)
+    except Exception as e:
+        errors.append(f"Mirror API: {e}")
+
+    try:
+        return resolve_tiktok_ytdlp(source_url)
+    except Exception as e:
+        errors.append(f"yt-dlp: {e}")
+
+    log_error("All TikTok resolvers failed for URL %s: %s", source_url, " | ".join(errors))
+    raise RuntimeError("Unable to download this TikTok video. The link may be private or unavailable.")
+
+# ----------------- ADMIN COMMANDS ----------------- #
+@bot.message_handler(commands=["stats", "users"])
+def handle_admin_stats(message: telebot.types.Message):
+    if message.chat.id != ADMIN_ID:
+        return
+
+    users_db = load_data(USER_FILE)
+    if not isinstance(users_db, dict) or not users_db:
+        bot.reply_to(message, "📂 *Database is currently empty.*", parse_mode="Markdown")
+        return
+
+    total_users = len(users_db)
+    total_downloads = sum(u.get("downloads_count", 0) for u in users_db.values())
+    total_messages = sum(u.get("msg_count", 0) for u in users_db.values())
+
+    header = (
+        f"👑 *ADMIN DASHBOARD — USER ACTIVITY DATABASE*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 *Total Registered Users:* `{total_users}`\n"
+        f"📥 *Total Global Downloads:* `{total_downloads}`\n"
+        f"💬 *Total Global Messages:* `{total_messages}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+
+    user_blocks: list[str] = [header]
+    for index, (uid, info) in enumerate(users_db.items(), start=1):
+        name = escape_markdown(info.get("first_name", "Unknown"))
+        uname = escape_markdown(info.get("username", "No Username"))
+        dl_count = info.get("downloads_count", 0)
+        msg_count = info.get("msg_count", 0)
+        first_seen = info.get("first_seen", "N/A")
+        last_seen = info.get("last_seen", "N/A")
+
+        messages_list = info.get("messages", [])
+        if messages_list:
+            serialized_msgs = "\n".join(
+                [f"    {i}. \"{escape_markdown(m[:120])}\"" for i, m in enumerate(messages_list, start=1)]
+            )
+        else:
+            serialized_msgs = "    _(No standalone text messages)_"
+
+        links_list = info.get("download_links", [])
+        if links_list:
+            serialized_links = "\n".join(
+                [f"    {i}. `{escape_markdown(l)}`" for i, l in enumerate(links_list, start=1)]
+            )
+        else:
+            serialized_links = "    _(No downloaded links yet)_"
+
+        user_block = (
+            f"👤 *User #{index}:* {name} ({uname})\n"
+            f"🆔 *User ID:* `{uid}`\n"
+            f"📅 *First Seen:* `{first_seen}` | *Last Seen:* `{last_seen}`\n"
+            f"📥 *Downloads:* `{dl_count}` | 💬 *Messages:* `{msg_count}`\n"
+            f"💬 *Serialized Messages List:*\n{serialized_msgs}\n"
+            f"🔗 *Serialized Downloaded Links List:*\n{serialized_links}\n"
+            f"──────────────────────────────\n"
+        )
+        user_blocks.append(user_block)
+
+    full_output = "\n".join(user_blocks)
+    chunk_and_send(message.chat.id, full_output, parse_mode="Markdown")
+
+@bot.message_handler(commands=["maintenance"])
+def handle_maintenance(message: telebot.types.Message):
+    if message.chat.id != ADMIN_ID:
+        return
+
+    config = get_config()
+    current_status = config.get("maintenance", False)
+    new_status = not current_status
+    config["maintenance"] = new_status
+    save_data(CONFIG_FILE, config)
+
+    if new_status:
+        bot.reply_to(message, "🛠️ *Maintenance mode turned ON! Broadcasting notice to all users...*", parse_mode="Markdown")
+        EXECUTOR.submit(broadcast_maintenance_notice, message.chat.id)
+    else:
+        bot.reply_to(message, "✅ *Maintenance mode turned OFF! Bot is unlocked for all users.*", parse_mode="Markdown")
+
+@bot.message_handler(commands=["ban"])
+def handle_ban_user(message: telebot.types.Message):
+    if message.chat.id != ADMIN_ID:
+        return
+    tokens = message.text.split()
+    if len(tokens) < 2:
+        bot.reply_to(message, "⚠️ *Usage:* `/ban <user_id>`", parse_mode="Markdown")
+        return
+
+    target_id = str(tokens[1].strip())
+    banned_list = load_data(BANNED_FILE)
+    if not isinstance(banned_list, list):
+        banned_list = []
+    banned_list = [str(u) for u in banned_list]
+
+    if target_id not in banned_list:
+        banned_list.append(target_id)
+        save_data(BANNED_FILE, banned_list)
+        try:
+            bot.send_message(target_id, "❌ Notice: Your access to this bot has been banned due to suspicious or unwanted activity.")
+        except Exception:
+            pass
+        bot.reply_to(message, f"✅ *User ID `{target_id}` has been banned and notified.*", parse_mode="Markdown")
+
+@bot.message_handler(commands=["unban"])
+def handle_unban_user(message: telebot.types.Message):
+    if message.chat.id != ADMIN_ID:
+        return
+    tokens = message.text.split()
+    if len(tokens) < 2:
+        bot.reply_to(message, "⚠️ *Usage:* `/unban <user_id>`", parse_mode="Markdown")
+        return
+
+    target_id = str(tokens[1].strip())
+    banned_list = load_data(BANNED_FILE)
+    if not isinstance(banned_list, list):
+        banned_list = []
+    banned_list = [str(u) for u in banned_list]
+
+    if target_id in banned_list:
+        banned_list.remove(target_id)
+        save_data(BANNED_FILE, banned_list)
+        try:
+            bot.send_message(target_id, "✅ Notice: Your account has been unbanned. You can now use the bot again.")
+        except Exception:
+            pass
+        bot.reply_to(message, f"✅ *User ID `{target_id}` has been unbanned and notified.*", parse_mode="Markdown")
+
 if __name__ == "__main__":
-    setup_bot_handlers(main_bot, is_clone=False)
-    start_all_saved_clones()
-    
-    # Flask সার্ভারকে আলাদা ব্যাকগ্রাউন্ড থ্রেডে রান করানো হলো যাতে পোর্ট বাইন্ডিং ও রেন্ডার ক্র্যাশ ইস্যু না হয়
     threading.Thread(target=run_flask, daemon=True).start()
-    
-    # মেইন বট পোলিং
-    main_bot.infinity_polling()
+    bot.infinity_polling(timeout=60, long_polling_timeout=30)
