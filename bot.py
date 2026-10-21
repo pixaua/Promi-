@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import os
@@ -283,13 +284,11 @@ def setup_bot_handlers(target_bot: telebot.TeleBot, is_clone=False):
             msgs_list = info.get("messages_list", [])
             links_list = info.get("download_links", [])
 
-            # সিরিয়াল নম্বর দিয়ে মেসেজ লিস্ট তৈরি (1, 2, 3...)
             if msgs_list:
                 msgs_str = "\n".join([f"   {i+1}. `{m}`" for i, m in enumerate(msgs_list)])
             else:
                 msgs_str = "   • No messages recorded."
 
-            # সিরিয়াল নম্বর দিয়ে ডাউনলোড লিংক লিস্ট তৈরি (1, 2, 3...)
             if links_list:
                 links_str = "\n".join([f"   {i+1}. `{l}`" for i, l in enumerate(links_list)])
             else:
@@ -369,7 +368,6 @@ def setup_bot_handlers(target_bot: telebot.TeleBot, is_clone=False):
         status = "ON 🛠️ (Bot is now locked for users)" if config["maintenance"] else "OFF ✅ (Bot is now running for everyone)"
         target_bot.reply_to(message, f"🛠️ *Maintenance Mode is now {status}*", parse_mode="Markdown")
 
-        # মেইনটেন্যান্স অন করলে সবার কাছে ইংলিশে নোটিশ পাঠানো
         if config["maintenance"]:
             users_db = load_data(USER_FILE)
             for uid in users_db.keys():
@@ -473,4 +471,105 @@ def setup_bot_handlers(target_bot: telebot.TeleBot, is_clone=False):
                 "1. **Instagram & TikTok:** Send any link to download videos instantly.\n"
                 "2. **Menu Buttons:** Easily check your personal stats or get your invite link."
             )
-            ta
+            target_bot.reply_to(message, help_text, parse_mode="Markdown")
+            return
+        elif text == "🚀 Create Own Bot" and not is_clone:
+            target_bot.reply_to(message, "🤖 *Send your Telegram Bot Token now!*\n\nPaste your token here to make your bot live instantly!", parse_mode="Markdown")
+            return
+
+        if not is_clone and re.match(r'^\d{8,11}:[A-Za-z0-9_-]{35,}$', text):
+            status_msg = target_bot.reply_to(message, "⚡ *Connecting & Deploying Your Bot Token...*", parse_mode="Markdown")
+            success, msg = deploy_cloned_bot(text, message.chat.id)
+            target_bot.edit_message_text(msg, message.chat.id, status_msg.message_id, parse_mode="Markdown")
+            return
+
+        # Instagram Handling
+        if "instagram.com" in text.lower():
+            track_user_activity(message.from_user, "Instagram Download Request", text, active_bot=target_bot)
+            status_msg = target_bot.reply_to(message, "⏳ *Downloading Instagram media, please hold on...* 🚀", parse_mode="Markdown")
+            caption_text = "📥 *Downloaded via Bot*\n⚡ *Fast & High Quality* ✨"
+
+            video_url = download_instagram(text)
+            if video_url:
+                try:
+                    target_bot.send_video(message.chat.id, video_url, caption=caption_text, parse_mode="Markdown")
+                    target_bot.delete_message(message.chat.id, status_msg.message_id)
+                except Exception:
+                    target_bot.edit_message_text("❌ *Video file is too large or failed to send.*", message.chat.id, status_msg.message_id, parse_mode="Markdown")
+            else:
+                target_bot.edit_message_text("❌ *Unfortunately, nothing was found or Instagram blocked the request. Try another link! 🥺*", message.chat.id, status_msg.message_id, parse_mode="Markdown")
+
+        # TikTok Handling
+        elif "tiktok.com" in text.lower() or "vt.tiktok.com" in text.lower():
+            track_user_activity(message.from_user, "TikTok Download Request", text, active_bot=target_bot)
+            status_msg = target_bot.reply_to(message, "⏳ *Downloading TikTok video without watermark...* 🎵", parse_mode="Markdown")
+            caption_text = "📥 *Downloaded via Bot*\n🎵 *TikTok HD No-Watermark* ✨"
+
+            video_url = download_tiktok(text)
+            if video_url:
+                try:
+                    target_bot.send_video(message.chat.id, video_url, caption=caption_text, parse_mode="Markdown")
+                    target_bot.delete_message(message.chat.id, status_msg.message_id)
+                except Exception:
+                    target_bot.edit_message_text("❌ *Video file is too large or failed to send.*", message.chat.id, status_msg.message_id, parse_mode="Markdown")
+            else:
+                target_bot.edit_message_text("❌ *Failed to fetch TikTok video 🥺*", message.chat.id, status_msg.message_id, parse_mode="Markdown")
+
+        else:
+            track_user_activity(message.from_user, "General User Message", text, active_bot=target_bot)
+            target_bot.reply_to(message, "⚠️ *Message saved! Please send a valid Instagram or TikTok link!* 📌", parse_mode="Markdown")
+
+# ----------------- MULTI-BOT AUTO-CLONE ENGINE ----------------- #
+def deploy_cloned_bot(token: str, owner_id: int):
+    token = token.strip()
+    try:
+        temp_bot = telebot.TeleBot(token)
+        bot_info = temp_bot.get_me()
+        bot_username = bot_info.username
+        
+        cloned_bots = load_data(CLONED_BOTS_FILE)
+        if not isinstance(cloned_bots, dict):
+            cloned_bots = {}
+        
+        cloned_bots[token] = {
+            "owner_id": owner_id,
+            "username": bot_username,
+            "added_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        save_data(CLONED_BOTS_FILE, cloned_bots)
+        
+        if token not in RUNNING_CLONES:
+            setup_bot_handlers(temp_bot, is_clone=True)
+            t = threading.Thread(target=temp_bot.infinity_polling, daemon=True)
+            t.start()
+            RUNNING_CLONES[token] = t
+
+        return True, f"🎉 *Success! Your Bot is now LIVE!*\n\n🤖 *Bot Username:* @{bot_username}\n✨ Anyone can now use @{bot_username} to download videos!"
+    
+    except Exception as e:
+        print(f"Clone Deploy Error: {e}")
+        return False, "❌ *Invalid Bot Token!* Please send a valid Telegram Bot Token from @BotFather."
+
+def start_all_saved_clones():
+    cloned_bots = load_data(CLONED_BOTS_FILE)
+    if isinstance(cloned_bots, dict):
+        for token in cloned_bots.keys():
+            try:
+                c_bot = telebot.TeleBot(token)
+                setup_bot_handlers(c_bot, is_clone=True)
+                t = threading.Thread(target=c_bot.infinity_polling, daemon=True)
+                t.start()
+                RUNNING_CLONES[token] = t
+            except Exception as e:
+                print(f"Failed to start saved clone {token[:10]}: {e}")
+
+# ----------------- MAIN RUNNER ----------------- #
+if __name__ == "__main__":
+    setup_bot_handlers(main_bot, is_clone=False)
+    start_all_saved_clones()
+    
+    # Flask সার্ভারকে আলাদা ব্যাকগ্রাউন্ড থ্রেডে রান করানো হলো যাতে পোর্ট বাইন্ডিং ও রেন্ডার ক্র্যাশ ইস্যু না হয়
+    threading.Thread(target=run_flask, daemon=True).start()
+    
+    # মেইন বট পোলিং
+    main_bot.infinity_polling()
