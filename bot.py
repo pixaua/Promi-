@@ -2,12 +2,12 @@
 =============================================================================
 7G ULTIMATE TELEGRAM MASTER BOT (ENTERPRISE PRODUCTION EDITION)
 =============================================================================
-Primary Token: 7678905793:AAGjmiEdpao7qRhchFUMa588UYyToP2WW_w
+Primary Token: 7678905793:AAGMJ0OsQui8jD4kKin1I7Djw-ftb7b79hc
 Master Admin ID: 6162953772
 Meta AI API Key: nxt_3a454c41e6a84aeead28d1fb4aec87a4
 =============================================================================
 FEATURES INCLUDED:
-  1. Instagram HD Downloader (yt-dlp + VKR API fallback + Snapinsta backup)
+  1. Instagram HD Downloader (yt-dlp Native + Instaloader + SaveInsta + Snapinsta)
   2. Multi-Tier TikTok HD Downloader without Watermark (TikWM HD + SnapTik + yt-dlp)
   3. Meta AI Assistant Chat (/ai or general text) & AI Image Generator (/image)
   4. Complete User Activity Tracking (Joined date, timestamps, referrals, points)
@@ -72,7 +72,7 @@ def log_error(message: str, *args: Any) -> None:
     sys.stderr.flush()
 
 # ----------------- CONFIGURATION ----------------- #
-MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAGjmiEdpao7qRhchFUMa588UYyToP2WW_w").strip()
+MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAGMJ0OsQui8jD4kKin1I7Djw-ftb7b79hc").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6162953772"))
 
 META_AI_KEY = os.getenv("META_AI_API_KEY", "nxt_3a454c41e6a84aeead28d1fb4aec87a4").strip()
@@ -379,44 +379,136 @@ def download_to_temp_file(media_url: str, referer: str = "https://www.tiktok.com
 def download_instagram(url: str) -> str | None:
     """
     Instagram Downloader:
-    Method 1: yt-dlp direct extraction
-    Method 2: VKR API alternative
-    Method 3: TikWM/Snapinsta backup
+    Method 1: yt-dlp Native Direct Downloader (Downloads MP4 directly to disk)
+    Method 2: Instaloader Native Extractor (by Shortcode)
+    Method 3: yt-dlp Format Extraction Fallback
+    Method 4: SaveInsta / Snapinsta Web Resolver Fallback
     """
-    clean_url = url.split("?")[0]
-    
-    # Method 1: yt-dlp
-    ydl_opts = {'format': 'best', 'quiet': True, 'no_warnings': True}
+    clean_url = url.strip()
+    m = re.search(r"https?://(?:www\.)?instagram\.com/(?:reel|p|tv)/[A-Za-z0-9_-]+", clean_url)
+    if m:
+        clean_url = m.group(0).rstrip("/") + "/"
+    else:
+        clean_url = clean_url.split("?")[0].rstrip("/") + "/"
+
+    shortcode_match = re.search(r"/(?:reel|p|tv)/([A-Za-z0-9_-]+)", clean_url)
+    shortcode = shortcode_match.group(1) if shortcode_match else None
+
+    # Method 1: yt-dlp Native Direct Downloader (Writes MP4 directly to disk with proper browser headers)
     try:
+        temp_dir = tempfile.gettempdir()
+        prefix = f"ig_{uuid.uuid4().hex[:8]}"
+        out_tmpl = os.path.join(temp_dir, f"{prefix}.%(ext)s")
+        ydl_opts = {
+            'format': 'best[ext=mp4]/best',
+            'outtmpl': out_tmpl,
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+            'http_headers': {
+                'User-Agent': USER_AGENT,
+                'Referer': 'https://www.instagram.com/',
+                'Accept': '*/*',
+            },
+            'max_filesize': 49 * 1024 * 1024,
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            info = ydl.extract_info(clean_url, download=True)
             if info:
-                if 'url' in info:
+                candidate_path = ydl.prepare_filename(info)
+                if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 1000:
+                    return candidate_path
+                for f in os.listdir(temp_dir):
+                    if f.startswith(prefix):
+                        f_path = os.path.join(temp_dir, f)
+                        if os.path.getsize(f_path) > 1000:
+                            return f_path
+    except Exception as ydl_err:
+        log_error(f"yt-dlp Instagram direct download failed: {ydl_err}")
+
+    # Method 2: Instaloader Native Extractor
+    if shortcode:
+        try:
+            import instaloader
+            L = instaloader.Instaloader(quiet=True, download_comments=False)
+            post = instaloader.Post.from_shortcode(L.context, shortcode)
+            if getattr(post, "is_video", False) and getattr(post, "video_url", None):
+                tmp_file = download_to_temp_file(post.video_url, referer="https://www.instagram.com/")
+                if tmp_file:
+                    return tmp_file
+                return post.video_url
+            elif getattr(post, "url", None):
+                tmp_file = download_to_temp_file(post.url, referer="https://www.instagram.com/")
+                if tmp_file:
+                    return tmp_file
+                return post.url
+        except Exception as inst_err:
+            log_error(f"Instaloader Instagram extraction failed: {inst_err}")
+
+    # Method 3: yt-dlp Format Extraction Fallback
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'http_headers': {
+                'User-Agent': USER_AGENT,
+                'Referer': 'https://www.instagram.com/',
+            }
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(clean_url, download=False)
+            if info:
+                if info.get('url'):
+                    tmp_file = download_to_temp_file(info['url'], referer="https://www.instagram.com/")
+                    if tmp_file:
+                        return tmp_file
                     return info['url']
-                elif 'entries' in info and len(info['entries']) > 0:
-                    return info['entries'][0].get('url')
-    except Exception:
-        pass
+                if 'formats' in info and info['formats']:
+                    for fmt in reversed(info['formats']):
+                        if fmt.get('url'):
+                            tmp_file = download_to_temp_file(fmt['url'], referer="https://www.instagram.com/")
+                            if tmp_file:
+                                return tmp_file
+                            return fmt['url']
+                if 'entries' in info and len(info['entries']) > 0:
+                    first_entry = info['entries'][0]
+                    if first_entry.get('url'):
+                        tmp_file = download_to_temp_file(first_entry['url'], referer="https://www.instagram.com/")
+                        if tmp_file:
+                            return tmp_file
+                        return first_entry['url']
+    except Exception as ydl_info_err:
+        log_error(f"yt-dlp Instagram format extractor failed: {ydl_info_err}")
 
-    # Method 2: VKR Alternative API
+    # Method 4: SaveInsta / Snapinsta Web Resolver
     try:
-        api_url = f"https://api.vkrdown.com/insta/?url={clean_url}"
-        res = requests.get(api_url, timeout=12).json()
-        if isinstance(res, dict) and "data" in res and res["data"]:
-            first_media = res["data"][0]
-            if isinstance(first_media, dict) and first_media.get("url"):
-                return first_media.get("url")
-    except Exception:
-        pass
-
-    # Method 3: Snapinsta / TikWM proxy
-    try:
-        headers = {'User-Agent': USER_AGENT}
-        res = requests.get(f"https://tikwm.com/api/?url={clean_url}", headers=headers, timeout=12).json()
-        if isinstance(res, dict) and "data" in res and res["data"].get("play"):
-            return res["data"]["play"]
-    except Exception:
-        pass
+        headers = {
+            'User-Agent': USER_AGENT,
+            'Referer': 'https://saveinsta.app/',
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+        }
+        endpoints = [
+            "https://v3.saveinsta.app/api/ajaxSearch",
+            "https://saveinsta.io/api/ajaxSearch",
+            "https://snapinsta.to/api/ajaxSearch"
+        ]
+        for ep in endpoints:
+            try:
+                res = requests.post(ep, data={"q": clean_url, "t": "media", "lang": "en"}, headers=headers, timeout=12)
+                if res.status_code == 200:
+                    resp_json = res.json()
+                    html_content = resp_json.get("data", "")
+                    m_url = re.search(r'href="([^"]+)"[^>]*class="[^"]*btn-download[^"]*"', html_content) or re.search(r'href="([^"]+)"[^>]*download', html_content)
+                    if m_url:
+                        video_link = html.unescape(m_url.group(1))
+                        tmp_file = download_to_temp_file(video_link, referer="https://saveinsta.app/")
+                        if tmp_file:
+                            return tmp_file
+                        return video_link
+            except Exception:
+                pass
+    except Exception as save_err:
+        log_error(f"SaveInsta resolver failed: {save_err}")
 
     return None
 
@@ -1111,18 +1203,7 @@ def handle_instagram_task(bot_instance: telebot.TeleBot, message: telebot.types.
             if os.path.isfile(video_url):
                 local_file = video_url
                 with open(local_file, "rb") as vf:
-                    bot_instance.send_video(
-                        message.chat.id,
-                        vf,
-                        caption=caption_text,
-                        parse_mode="HTML",
-                        supports_streaming=True,
-                        timeout=120
-                    )
-            else:
-                local_file = download_to_temp_file(video_url, referer="https://www.instagram.com/")
-                if local_file and os.path.exists(local_file):
-                    with open(local_file, "rb") as vf:
+                    try:
                         bot_instance.send_video(
                             message.chat.id,
                             vf,
@@ -1131,6 +1212,35 @@ def handle_instagram_task(bot_instance: telebot.TeleBot, message: telebot.types.
                             supports_streaming=True,
                             timeout=120
                         )
+                    except Exception:
+                        vf.seek(0)
+                        bot_instance.send_document(
+                            message.chat.id,
+                            vf,
+                            caption=caption_text,
+                            parse_mode="HTML"
+                        )
+            else:
+                local_file = download_to_temp_file(video_url, referer="https://www.instagram.com/")
+                if local_file and os.path.exists(local_file):
+                    with open(local_file, "rb") as vf:
+                        try:
+                            bot_instance.send_video(
+                                message.chat.id,
+                                vf,
+                                caption=caption_text,
+                                parse_mode="HTML",
+                                supports_streaming=True,
+                                timeout=120
+                            )
+                        except Exception:
+                            vf.seek(0)
+                            bot_instance.send_document(
+                                message.chat.id,
+                                vf,
+                                caption=caption_text,
+                                parse_mode="HTML"
+                            )
                 else:
                     bot_instance.send_video(
                         message.chat.id,
