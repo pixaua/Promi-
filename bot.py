@@ -2,9 +2,23 @@
 =============================================================================
 7G ULTIMATE TELEGRAM MASTER BOT (ENTERPRISE PRODUCTION EDITION)
 =============================================================================
-Primary Token: 7678905793:AAEBaSNZJip2Im6HYNPkQR_Xv7dA24N_0xs
+Primary Token: 7678905793:AAGjmiEdpao7qRhchFUMa588UYyToP2WW_w
 Master Admin ID: 6162953772
 Meta AI API Key: nxt_3a454c41e6a84aeead28d1fb4aec87a4
+=============================================================================
+FEATURES INCLUDED:
+  1. Instagram HD Downloader (yt-dlp + VKR API fallback + Snapinsta backup)
+  2. Multi-Tier TikTok HD Downloader without Watermark (TikWM HD + SnapTik + yt-dlp)
+  3. Meta AI Assistant Chat (/ai or general text) & AI Image Generator (/image)
+  4. Complete User Activity Tracking (Joined date, timestamps, referrals, points)
+  5. Admin Dashboard (/stats & /users) with Serialized Messages & Downloaded Links Lists
+  6. Detailed Single User Inspection (/userinfo <user_id>)
+  7. Ban & Unban System (/ban & /unban) with Instant Direct English Notifications
+  8. Maintenance Mode Control (/maintenance) with Instant Auto-Broadcast to ALL Users
+  9. Admin Global Announcement Engine (/broadcast <message>)
+ 10. Auto-Telegram Database Backup to Admin Inbox
+ 11. "Create Own Bot" Multi-Bot System (Clone any bot token live without sub-cloning)
+ 12. 24/7 Keep-Alive Flask Server & Self-Ping Loop for Render/Railway/VPS
 =============================================================================
 """
 
@@ -18,6 +32,7 @@ import os
 import random
 import re
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -57,7 +72,7 @@ def log_error(message: str, *args: Any) -> None:
     sys.stderr.flush()
 
 # ----------------- CONFIGURATION ----------------- #
-MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAEBaSNZJip2Im6HYNPkQR_Xv7dA24N_0xs").strip()
+MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAGjmiEdpao7qRhchFUMa588UYyToP2WW_w").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6162953772"))
 
 META_AI_KEY = os.getenv("META_AI_API_KEY", "nxt_3a454c41e6a84aeead28d1fb4aec87a4").strip()
@@ -323,6 +338,44 @@ def send_admin_alert(user: telebot.types.User, action_type: str, text_data: str,
 
 # ----------------- ADVANCED DOWNLOAD ENGINES ----------------- #
 
+def download_to_temp_file(media_url: str, referer: str = "https://www.tiktok.com/") -> str | None:
+    """
+    Downloads media directly to a local temporary file with proper browser headers.
+    This prevents Telegram API error: '400 Bad Request: failed to get HTTP URL content'.
+    """
+    try:
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Referer": referer,
+            "Accept": "*/*",
+        }
+        with requests.get(media_url, headers=headers, stream=True, timeout=60) as resp:
+            resp.raise_for_status()
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+                total_bytes = 0
+                for chunk in resp.iter_content(chunk_size=128 * 1024):
+                    if chunk:
+                        tmp.write(chunk)
+                        total_bytes += len(chunk)
+                        # Telegram bot upload limit is 50MB (52428800 bytes)
+                        if total_bytes > 49.5 * 1024 * 1024:
+                            log_error("Downloaded file exceeded Telegram 50MB limit.")
+                            break
+                tmp_path = tmp.name
+
+        if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 1000:
+            return tmp_path
+        else:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            return None
+    except Exception as e:
+        log_error(f"Download to temp file failed: {e}")
+        return None
+
 def download_instagram(url: str) -> str | None:
     """
     Instagram Downloader:
@@ -370,53 +423,136 @@ def download_instagram(url: str) -> str | None:
 def download_tiktok(url: str) -> tuple[str, str]:
     """
     TikTok Downloader (HD Without Watermark):
-    Returns: (title, direct_hd_video_url)
-    Uses TikWM HD API + SnapTik backup + yt-dlp native.
+    Returns: (title, local_filepath_or_url)
+    Uses:
+      1. TikWM API (HD/Normal) -> downloaded locally to bypass Telegram 400 CDN block
+      2. yt-dlp Native Direct Video Extractor & Downloader (Direct to Disk)
+      3. Tiklydown Mirror API -> downloaded locally
+      4. VKR API -> downloaded locally
     """
-    # 1. TikWM HD Resolver
-    try:
-        api_url = f"{TIKWM_ENDPOINT}?{urlencode({'url': url, 'hd': '1'})}"
-        res = requests.get(api_url, headers={"User-Agent": USER_AGENT}, timeout=15).json()
-        if isinstance(res, dict) and res.get("code") == 0 and "data" in res:
-            data = res["data"]
-            title = str(data.get("title") or "TikTok Video")
-            video_url = data.get("hdplay") or data.get("play") or data.get("wmplay")
-            if video_url:
-                return title, video_url
-    except Exception:
-        pass
+    clean_url = url.strip()
+    m = re.search(r'https?://(?:www\.|vt\.|vm\.|m\.)?tiktok\.com/[^\s\?]+', clean_url)
+    base_clean_url = m.group(0) if m else clean_url.split("?")[0]
 
-    # 2. Tiklydown Mirror Backup
+    # Resolve redirects for shortened links (vt.tiktok.com or vm.tiktok.com)
+    if "vt.tiktok.com" in clean_url or "vm.tiktok.com" in clean_url:
+        try:
+            head_resp = requests.head(clean_url, allow_redirects=True, timeout=10, headers={"User-Agent": USER_AGENT})
+            if head_resp.url and "tiktok.com" in head_resp.url:
+                clean_url = head_resp.url
+                m2 = re.search(r'https?://(?:www\.|vt\.|vm\.|m\.)?tiktok\.com/[^\s\?]+', clean_url)
+                base_clean_url = m2.group(0) if m2 else clean_url.split("?")[0]
+        except Exception:
+            pass
+
+    # 1. TikWM API (Try POST and GET across mirrors)
+    tikwm_endpoints = ["https://www.tikwm.com/api/", "https://tikwm.com/api/"]
+    for endpoint in tikwm_endpoints:
+        for target_u in [clean_url, base_clean_url]:
+            # POST attempt
+            try:
+                res = requests.post(
+                    endpoint,
+                    data={"url": target_u, "hd": 1},
+                    headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+                    timeout=15
+                ).json()
+                if isinstance(res, dict) and res.get("code") == 0 and "data" in res:
+                    data = res["data"]
+                    title = str(data.get("title") or "TikTok Video")
+                    video_url = data.get("hdplay") or data.get("play") or data.get("wmplay")
+                    if video_url:
+                        if video_url.startswith("/"):
+                            video_url = f"https://www.tikwm.com{video_url}"
+                        tmp_file = download_to_temp_file(video_url, referer="https://www.tikwm.com/")
+                        if tmp_file:
+                            return title, tmp_file
+                        return title, video_url
+            except Exception as e:
+                log_error(f"TikWM POST attempt error on {endpoint}: {e}")
+
+            # GET attempt
+            try:
+                api_url = f"{endpoint}?{urlencode({'url': target_u, 'hd': '1'})}"
+                res = requests.get(api_url, headers={"User-Agent": USER_AGENT}, timeout=15).json()
+                if isinstance(res, dict) and res.get("code") == 0 and "data" in res:
+                    data = res["data"]
+                    title = str(data.get("title") or "TikTok Video")
+                    video_url = data.get("hdplay") or data.get("play") or data.get("wmplay")
+                    if video_url:
+                        if video_url.startswith("/"):
+                            video_url = f"https://www.tikwm.com{video_url}"
+                        tmp_file = download_to_temp_file(video_url, referer="https://www.tikwm.com/")
+                        if tmp_file:
+                            return title, tmp_file
+                        return title, video_url
+            except Exception as e:
+                log_error(f"TikWM GET attempt error on {endpoint}: {e}")
+
+    # 2. yt-dlp Native Direct Downloader (Downloads MP4 directly to server disk)
     try:
-        endpoint = f"https://api.tiklydown.eu.org/api/download?url={quote(url)}"
+        temp_dir = tempfile.gettempdir()
+        prefix = f"tt_{uuid.uuid4().hex[:8]}"
+        out_tmpl = os.path.join(temp_dir, f"{prefix}.%(ext)s")
+        ydl_opts = {
+            'format': 'best[ext=mp4]/best',
+            'outtmpl': out_tmpl,
+            'quiet': True,
+            'no_warnings': True,
+            'http_headers': {
+                'User-Agent': USER_AGENT,
+                'Referer': 'https://www.tiktok.com/'
+            },
+            'socket_timeout': 30,
+            'max_filesize': 49 * 1024 * 1024,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(clean_url, download=True)
+            if info:
+                title = str(info.get("title") or "TikTok Video")
+                candidate_path = ydl.prepare_filename(info)
+                if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 1000:
+                    return title, candidate_path
+                for f in os.listdir(temp_dir):
+                    if f.startswith(prefix):
+                        f_path = os.path.join(temp_dir, f)
+                        if os.path.getsize(f_path) > 1000:
+                            return title, f_path
+    except Exception as ydl_err:
+        log_error(f"yt-dlp TikTok fallback failed: {ydl_err}")
+
+    # 3. Tiklydown Mirror Backup
+    try:
+        endpoint = f"https://api.tiklydown.eu.org/api/download?url={quote(clean_url)}"
         res = requests.get(endpoint, headers={"User-Agent": USER_AGENT}, timeout=15).json()
         if isinstance(res, dict):
             title = str(res.get("title") or "TikTok Video")
             video_url = res.get("video", {}).get("noWatermark") or res.get("video", {}).get("watermark")
             if video_url:
+                tmp_file = download_to_temp_file(video_url, referer="https://www.tiktok.com/")
+                if tmp_file:
+                    return title, tmp_file
                 return title, video_url
     except Exception:
         pass
 
-    # 3. yt-dlp Native Extractor
+    # 4. VKR Alternative Downloader
     try:
-        ydl_opts = {
-            'format': 'best[ext=mp4]/best',
-            'quiet': True,
-            'no_warnings': True,
-            'http_headers': {'User-Agent': USER_AGENT}
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if info:
-                title = str(info.get("title") or "TikTok Video")
-                video_url = info.get("url")
-                if video_url:
-                    return title, video_url
+        endpoint = f"https://api.vkrdown.com/tiktok/?url={quote(clean_url)}"
+        res = requests.get(endpoint, headers={"User-Agent": USER_AGENT}, timeout=15).json()
+        if isinstance(res, dict) and "data" in res:
+            data = res["data"]
+            title = str(data.get("title") or "TikTok Video")
+            video_url = data.get("hd_play") or data.get("play")
+            if video_url:
+                tmp_file = download_to_temp_file(video_url)
+                if tmp_file:
+                    return title, tmp_file
+                return title, video_url
     except Exception:
         pass
 
-    raise RuntimeError("Could not resolve TikTok video link. The video may be private or restricted.")
+    raise RuntimeError("Could not resolve TikTok video. The video may be private, age-restricted, or temporarily unavailable.")
 
 # ----------------- META AI & IMAGE GENERATION ----------------- #
 
@@ -923,6 +1059,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
                 return
             else:
                 AWAITING_BOT_TOKEN.discard(message.chat.id)
+                # Not a token, proceed to normal message handling
 
         # Explicit /ai command
         if text.startswith("/ai"):
@@ -966,11 +1103,42 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
         EXECUTOR.submit(send_ai_response, bot_instance, message.chat.id, text, status_msg.message_id)
 
 def handle_instagram_task(bot_instance: telebot.TeleBot, message: telebot.types.Message, url: str, status_msg_id: int):
+    local_file = None
     try:
         video_url = download_instagram(url)
         if video_url:
             caption_text = "📥 <b>Downloaded via 7G Bot</b>\n⚡ <i>Fast & High Quality</i> ✨"
-            bot_instance.send_video(message.chat.id, video_url, caption=caption_text, parse_mode="HTML")
+            if os.path.isfile(video_url):
+                local_file = video_url
+                with open(local_file, "rb") as vf:
+                    bot_instance.send_video(
+                        message.chat.id,
+                        vf,
+                        caption=caption_text,
+                        parse_mode="HTML",
+                        supports_streaming=True,
+                        timeout=120
+                    )
+            else:
+                local_file = download_to_temp_file(video_url, referer="https://www.instagram.com/")
+                if local_file and os.path.exists(local_file):
+                    with open(local_file, "rb") as vf:
+                        bot_instance.send_video(
+                            message.chat.id,
+                            vf,
+                            caption=caption_text,
+                            parse_mode="HTML",
+                            supports_streaming=True,
+                            timeout=120
+                        )
+                else:
+                    bot_instance.send_video(
+                        message.chat.id,
+                        video_url,
+                        caption=caption_text,
+                        parse_mode="HTML",
+                        supports_streaming=True
+                    )
             try:
                 bot_instance.delete_message(message.chat.id, status_msg_id)
             except Exception:
@@ -985,17 +1153,58 @@ def handle_instagram_task(bot_instance: telebot.TeleBot, message: telebot.types.
     except Exception as e:
         log_error(f"Instagram download error: {e}")
         bot_instance.edit_message_text(
-            "❌ <b>Video file is too large or failed to send.</b>",
+            f"❌ <b>Instagram download failed.</b>\n<i>{escape(str(e))}</i>",
             message.chat.id,
             status_msg_id,
             parse_mode="HTML"
         )
+    finally:
+        if local_file and os.path.exists(local_file):
+            try:
+                os.remove(local_file)
+            except Exception:
+                pass
 
 def handle_tiktok_task(bot_instance: telebot.TeleBot, message: telebot.types.Message, url: str, status_msg_id: int):
+    local_file = None
     try:
-        title, video_url = download_tiktok(url)
+        title, file_or_url = download_tiktok(url)
         caption_text = f"📥 <b>{escape(title[:240])}</b>\n\n🎵 <b>TikTok HD No-Watermark</b> ✨\n⚡ <i>Downloaded via 7G Bot</i>"
-        bot_instance.send_video(message.chat.id, video_url, caption=caption_text, parse_mode="HTML")
+        
+        if os.path.isfile(file_or_url):
+            local_file = file_or_url
+            with open(local_file, "rb") as vf:
+                bot_instance.send_video(
+                    message.chat.id,
+                    vf,
+                    caption=caption_text,
+                    parse_mode="HTML",
+                    supports_streaming=True,
+                    timeout=120
+                )
+        else:
+            # Download file locally to avoid Telegram's '400 Bad Request: failed to get HTTP URL content' error
+            local_file = download_to_temp_file(file_or_url, referer="https://www.tiktok.com/")
+            if local_file and os.path.exists(local_file):
+                with open(local_file, "rb") as vf:
+                    bot_instance.send_video(
+                        message.chat.id,
+                        vf,
+                        caption=caption_text,
+                        parse_mode="HTML",
+                        supports_streaming=True,
+                        timeout=120
+                    )
+            else:
+                # Direct URL fallback
+                bot_instance.send_video(
+                    message.chat.id,
+                    file_or_url,
+                    caption=caption_text,
+                    parse_mode="HTML",
+                    supports_streaming=True
+                )
+
         try:
             bot_instance.delete_message(message.chat.id, status_msg_id)
         except Exception:
@@ -1008,6 +1217,12 @@ def handle_tiktok_task(bot_instance: telebot.TeleBot, message: telebot.types.Mes
             status_msg_id,
             parse_mode="HTML"
         )
+    finally:
+        if local_file and os.path.exists(local_file):
+            try:
+                os.remove(local_file)
+            except Exception:
+                pass
 
 # ----------------- BROADCAST & MAINTENANCE ENGINES ----------------- #
 
@@ -1083,14 +1298,16 @@ def launch_user_clone_bot(message: telebot.types.Message, token: str):
         bot_username = me.username
         bot_id = str(me.id)
 
+        # Ensure no webhook conflict on child bot
         try:
             test_bot.delete_webhook(drop_pending_updates=True)
         except Exception:
             pass
 
-        # Register clone handlers (is_clone=True disables further cloning!)
+        # Register clone handlers (WITH is_clone=True so child bot cannot clone further!)
         register_bot_handlers(test_bot, is_clone=True)
 
+        # Store in clones database
         with FILE_LOCK:
             clones_db = load_data(CLONES_FILE)
             if not isinstance(clones_db, dict):
@@ -1104,6 +1321,7 @@ def launch_user_clone_bot(message: telebot.types.Message, token: str):
             }
             save_data(CLONES_FILE, clones_db, trigger_backup=False)
 
+        # Start child bot polling thread
         ACTIVE_CLONES[bot_id] = test_bot
         t = threading.Thread(target=run_clone_polling, args=(test_bot, bot_username), daemon=True)
         t.start()
@@ -1119,6 +1337,7 @@ def launch_user_clone_bot(message: telebot.types.Message, token: str):
         )
         safe_reply(bot, message, success_msg, parse_mode="HTML")
 
+        # Alert Master Admin
         bot.send_message(
             ADMIN_ID,
             f"🤖 <b>New Bot Cloned!</b>\nOwner: <code>{message.chat.id}</code> ({message.from_user.first_name})\nBot: @{bot_username}",
