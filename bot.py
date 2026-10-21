@@ -52,7 +52,7 @@ def log_error(message: str, *args: Any) -> None:
     LOG.error(message, *args)
 
 # ----------------- ENVIRONMENT & CONFIGURATION ----------------- #
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAHG-u-pezwx3Cj-EF7koKwYZXDSZ55KENs").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAETCelr7kWKc8dAboh5ubFJLieEgLIvDC8").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6162953772"))
 META_AI_KEY = os.getenv("META_AI_API_KEY", "nxt_3a454c41e6a84aeead28d1fb4aec87a4").strip()
 
