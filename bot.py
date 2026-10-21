@@ -2,7 +2,7 @@
 =============================================================================
 7G ULTIMATE TELEGRAM MASTER BOT (ENTERPRISE PRODUCTION EDITION)
 =============================================================================
-Primary Token: 8767739044:AAFitpz-UPHOkpkpEiKUhvla9olYHZ5IKwc
+Primary Token: 7678905793:AAEBaSNZJip2Im6HYNPkQR_Xv7dA24N_0xs
 Master Admin ID: 6162953772
 Meta AI API Key: nxt_3a454c41e6a84aeead28d1fb4aec87a4
 =============================================================================
@@ -57,7 +57,7 @@ def log_error(message: str, *args: Any) -> None:
     sys.stderr.flush()
 
 # ----------------- CONFIGURATION ----------------- #
-MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "8767739044:AAFitpz-UPHOkpkpEiKUhvla9olYHZ5IKwc").strip()
+MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAEBaSNZJip2Im6HYNPkQR_Xv7dA24N_0xs").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6162953772"))
 
 META_AI_KEY = os.getenv("META_AI_API_KEY", "nxt_3a454c41e6a84aeead28d1fb4aec87a4").strip()
