@@ -1,6 +1,18 @@
 """
 =============================================================================
-7G ULTIMATE TELEGRAM BOT (FIXED PRODUCTION DEPLOYMENT SCRIPT)
+7G ULTIMATE TELEGRAM BOT (REFACTORED & ENHANCED PRODUCTION VERSION)
+=============================================================================
+Features:
+  - Instagram Video/Reel Downloader (yt-dlp + VKR fallback)
+  - Multi-Tier TikTok HD Downloader (TikWM Watermark-Free + Fallback API + yt-dlp)
+  - Meta AI Chat Assistant & Image Generation (/ai, /image)
+  - Advanced User Activity Tracking (Messages, Download Links, Referrals)
+  - Admin Dashboard (/stats, /users) with Serialized History & Smart Pagination
+  - Single User Deep Inspection (/userinfo <user_id>)
+  - System Maintenance Mode (/maintenance) with Instant Automatic User Broadcast
+  - Ban & Unban System (/ban, /unban) with Mandatory User Notifications
+  - Admin Broadcast Engine (/broadcast <message>) with Delivery Counter
+  - Flask Keep-Alive Server for 24/7 Hosting (Render, Railway, VPS, Heroku)
 =============================================================================
 """
 
@@ -56,7 +68,7 @@ USER_AGENT = (
 )
 
 MAX_TEXT_LENGTH = 3900
-TELEGRAM_CHUNK_LIMIT = 3900
+TELEGRAM_CHUNK_LIMIT = 3900  # Below Telegram's 4096 character limit for safety
 
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 USER_FILE = os.path.join(DATA_DIR, "users_db.json")
@@ -67,6 +79,7 @@ CONFIG_FILE = os.path.join(DATA_DIR, "bot_config.json")
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
 app = Flask(__name__)
 
+# Concurrency & Synchronization
 FILE_LOCK = threading.RLock()
 EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="7g_worker")
 
@@ -80,6 +93,7 @@ def healthz():
     return {"status": "ok", "timestamp": datetime.now().isoformat()}
 
 def run_flask():
+    """Runs lightweight web server to satisfy hosting port bindings (Render/Railway)."""
     port = int(os.environ.get("PORT", 10000))
     log(f"Starting Flask keep-alive server on port {port}...")
     try:
@@ -118,7 +132,7 @@ def chunk_and_send(chat_id: int, text: str, parse_mode: str = "Markdown") -> Non
                 bot.send_message(chat_id, chunk_body, parse_mode=parse_mode)
             except Exception:
                 bot.send_message(chat_id, chunk_body)
-            time.sleep(0.35)
+            time.sleep(0.3)
             current_chunk = [line]
             current_length = len(line) + 1
         else:
@@ -132,7 +146,7 @@ def chunk_and_send(chat_id: int, text: str, parse_mode: str = "Markdown") -> Non
         except Exception:
             bot.send_message(chat_id, chunk_body)
 
-# ----------------- DATABASE MANAGEMENT ----------------- #
+# ----------------- DATABASE MANAGEMENT (THREAD-SAFE) ----------------- #
 def load_data(filepath: str) -> Any:
     with FILE_LOCK:
         if not os.path.exists(filepath):
@@ -199,10 +213,12 @@ def track_user_activity(user: telebot.types.User, action_type: str, text_data: s
                 profile["first_name"] = user.first_name
             if user.username:
                 profile["username"] = f"@{user.username}"
+
             if "messages" not in profile or not isinstance(profile["messages"], list):
                 profile["messages"] = []
             if "download_links" not in profile or not isinstance(profile["download_links"], list):
                 profile["download_links"] = []
+
             if "Download" in action_type:
                 profile["downloads_count"] = profile.get("downloads_count", 0) + 1
                 if text_data:
@@ -234,40 +250,14 @@ def send_admin_alert(user: telebot.types.User, action_type: str, text_data: str,
     except Exception as e:
         log_error("Failed to send admin activity alert: %s", e)
 
-# ----------------- HTTP REQUEST HELPERS ----------------- #
-def http_request(url: str, *, method: str = "GET", payload: bytes | None = None, headers: dict[str, str] | None = None, timeout: int = 35, max_bytes: int = 3 * 1024 * 1024) -> tuple[int, dict[str, str], bytes]:
-    request_headers = {"User-Agent": USER_AGENT, "Accept": "*/*"}
-    if headers:
-        request_headers.update(headers)
-    req = Request(url, data=payload, headers=request_headers, method=method)
-    try:
-        with urlopen(req, timeout=timeout) as response:
-            chunks: list[bytes] = []
-            total = 0
-            while total < max_bytes:
-                chunk = response.read(min(64 * 1024, max_bytes - total))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                total += len(chunk)
-            return response.status, dict(response.headers.items()), b"".join(chunks)
-    except HTTPError as error:
-        body = error.read(1024)
-        raise RuntimeError(f"HTTP {error.code}: {body.decode(errors='replace')[:180]}") from error
-    except (URLError, TimeoutError) as error:
-        raise RuntimeError(f"Remote service unreachable: {error}") from error
-
-def json_request(url: str, *, method: str = "GET", data: dict[str, Any] | None = None, headers: dict[str, str] | None = None, timeout: int = 35) -> Any:
-    body = json.dumps(data).encode() if data is not None else None
-    request_headers = {"Content-Type": "application/json"} if data is not None else {}
-    if headers:
-        request_headers.update(headers)
-    _, _, raw = http_request(url, method=method, payload=body, headers=request_headers, timeout=timeout)
-    return json.loads(raw.decode("utf-8", errors="replace"))
-
 # ----------------- DOWNLOAD ENGINES ----------------- #
 def download_instagram(url: str) -> str | None:
-    ydl_opts = {"format": "best", "quiet": True, "no_warnings": True, "simulate": True}
+    ydl_opts = {
+        "format": "best",
+        "quiet": True,
+        "no_warnings": True,
+        "simulate": True,
+    }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -278,7 +268,7 @@ def download_instagram(url: str) -> str | None:
                     entry = info["entries"][0]
                     return entry.get("url") or entry.get("requested_formats", [{}])[0].get("url")
     except Exception as e:
-        log("Instagram yt-dlp extraction note: %s", e)
+        log("Instagram yt-dlp extractor attempt skipped: %s", e)
 
     clean_url = url.split("?")[0]
     try:
@@ -290,6 +280,7 @@ def download_instagram(url: str) -> str | None:
                 return first_media.get("url")
     except Exception as e:
         log_error("Instagram VKR fallback failed: %s", e)
+
     return None
 
 def resolve_tiktok_tikwm(source_url: str) -> tuple[str, str]:
@@ -297,44 +288,203 @@ def resolve_tiktok_tikwm(source_url: str) -> tuple[str, str]:
     response = json_request(endpoint, timeout=30)
     if not isinstance(response, dict):
         raise RuntimeError("TikWM returned invalid response")
+
     code = response.get("code")
     if code not in (0, "0", None):
-        raise RuntimeError("TikWM error")
+        msg = response.get("msg") or "TikWM service error"
+        raise RuntimeError(f"TikWM error: {msg}")
+
     data = response.get("data")
     if not isinstance(data, dict):
         raise RuntimeError("TikWM returned empty payload")
+
     title = str(data.get("title") or "TikTok Video")
     video_url = data.get("hdplay") or data.get("play") or data.get("wmplay")
     if not video_url:
         raise RuntimeError("TikWM did not contain a valid video link")
+
     return title, video_url
 
-def download_tiktok(source_url: str) -> tuple[str, str]:
-    try:
-        return resolve_tiktok_tikwm(source_url)
-    except Exception:
-        pass
-    
-    ydl_opts = {"format": "best[ext=mp4]/best", "quiet": True, "no_warnings": True, "simulate": True}
+def resolve_tiktok_fallback_api(source_url: str) -> tuple[str, str]:
+    endpoint = f"https://api.tiklydown.eu.org/api/download?url={quote(source_url)}"
+    headers = {"User-Agent": USER_AGENT}
+    res = requests.get(endpoint, headers=headers, timeout=25)
+    if res.status_code == 200:
+        data = res.json()
+        title = data.get("title") or "TikTok Video"
+        video_url = data.get("video", {}).get("noWatermark") or data.get("video", {}).get("watermark")
+        if video_url:
+            return title, video_url
+
+    raise RuntimeError("Secondary TikTok API could not resolve this URL")
+
+def resolve_tiktok_ytdlp(source_url: str) -> tuple[str, str]:
+    ydl_opts = {
+        "format": "best[ext=mp4]/best",
+        "quiet": True,
+        "no_warnings": True,
+        "simulate": True,
+        "http_headers": {"User-Agent": USER_AGENT},
+    }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(source_url, download=False)
-        if info:
-            return info.get("title") or "TikTok Video", info.get("url")
-    raise RuntimeError("Unable to download this TikTok video.")
+        if not info:
+            raise RuntimeError("yt-dlp returned no video info")
+        title = info.get("title") or "TikTok Video"
+        url = info.get("url")
+        if url:
+            return title, url
 
-# ----------------- AI ASSISTANT ----------------- #
-def ai_request(message: str) -> Any:
-    if not META_AI_KEY:
-        raise RuntimeError("META_AI_API_KEY is not configured")
-    return json_request(
-        META_AI_ENDPOINT,
-        method="POST",
-        data={"api_key": META_AI_KEY, "message": message},
-        headers={"Accept": "application/json"},
-        timeout=75,
+    raise RuntimeError("yt-dlp extraction failed for TikTok")
+
+def download_tiktok(source_url: str) -> tuple[str, str]:
+    errors: list[str] = []
+    try:
+        return resolve_tiktok_tikwm(source_url)
+    except Exception as e:
+        errors.append(f"TikWM: {e}")
+
+    try:
+        return resolve_tiktok_fallback_api(source_url)
+    except Exception as e:
+        errors.append(f"Mirror API: {e}")
+
+    try:
+        return resolve_tiktok_ytdlp(source_url)
+    except Exception as e:
+        errors.append(f"yt-dlp: {e}")
+
+    log_error("All TikTok resolvers failed for URL %s: %s", source_url, " | ".join(errors))
+    raise RuntimeError("Unable to download this TikTok video. The link may be private or unavailable.")
+
+# ----------------- ADMIN COMMANDS ----------------- #
+@bot.message_handler(commands=["stats", "users"])
+def handle_admin_stats(message: telebot.types.Message):
+    if message.chat.id != ADMIN_ID:
+        return
+
+    users_db = load_data(USER_FILE)
+    if not isinstance(users_db, dict) or not users_db:
+        bot.reply_to(message, "📂 *Database is currently empty.*", parse_mode="Markdown")
+        return
+
+    total_users = len(users_db)
+    total_downloads = sum(u.get("downloads_count", 0) for u in users_db.values())
+    total_messages = sum(u.get("msg_count", 0) for u in users_db.values())
+
+    header = (
+        f"👑 *ADMIN DASHBOARD — USER ACTIVITY DATABASE*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 *Total Registered Users:* `{total_users}`\n"
+        f"📥 *Total Global Downloads:* `{total_downloads}`\n"
+        f"💬 *Total Global Messages:* `{total_messages}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     )
 
-def extract_text(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value,
+    user_blocks: list[str] = [header]
+    for index, (uid, info) in enumerate(users_db.items(), start=1):
+        name = escape_markdown(info.get("first_name", "Unknown"))
+        uname = escape_markdown(info.get("username", "No Username"))
+        dl_count = info.get("downloads_count", 0)
+        msg_count = info.get("msg_count", 0)
+        first_seen = info.get("first_seen", "N/A")
+        last_seen = info.get("last_seen", "N/A")
+
+        messages_list = info.get("messages", [])
+        if messages_list:
+            serialized_msgs = "\n".join(
+                [f"    {i}. \"{escape_markdown(m[:120])}\"" for i, m in enumerate(messages_list, start=1)]
+            )
+        else:
+            serialized_msgs = "    _(No standalone text messages)_"
+
+        links_list = info.get("download_links", [])
+        if links_list:
+            serialized_links = "\n".join(
+                [f"    {i}. `{escape_markdown(l)}`" for i, l in enumerate(links_list, start=1)]
+            )
+        else:
+            serialized_links = "    _(No downloaded links yet)_"
+
+        user_block = (
+            f"👤 *User #{index}:* {name} ({uname})\n"
+            f"🆔 *User ID:* `{uid}`\n"
+            f"📅 *First Seen:* `{first_seen}` | *Last Seen:* `{last_seen}`\n"
+            f"📥 *Downloads:* `{dl_count}` | 💬 *Messages:* `{msg_count}`\n"
+            f"💬 *Serialized Messages List:*\n{serialized_msgs}\n"
+            f"🔗 *Serialized Downloaded Links List:*\n{serialized_links}\n"
+            f"──────────────────────────────\n"
+        )
+        user_blocks.append(user_block)
+
+    full_output = "\n".join(user_blocks)
+    chunk_and_send(message.chat.id, full_output, parse_mode="Markdown")
+
+@bot.message_handler(commands=["maintenance"])
+def handle_maintenance(message: telebot.types.Message):
+    if message.chat.id != ADMIN_ID:
+        return
+
+    config = get_config()
+    current_status = config.get("maintenance", False)
+    new_status = not current_status
+    config["maintenance"] = new_status
+    save_data(CONFIG_FILE, config)
+
+    if new_status:
+        bot.reply_to(message, "🛠️ *Maintenance mode turned ON! Broadcasting notice to all users...*", parse_mode="Markdown")
+        EXECUTOR.submit(broadcast_maintenance_notice, message.chat.id)
+    else:
+        bot.reply_to(message, "✅ *Maintenance mode turned OFF! Bot is unlocked for all users.*", parse_mode="Markdown")
+
+@bot.message_handler(commands=["ban"])
+def handle_ban_user(message: telebot.types.Message):
+    if message.chat.id != ADMIN_ID:
+        return
+    tokens = message.text.split()
+    if len(tokens) < 2:
+        bot.reply_to(message, "⚠️ *Usage:* `/ban <user_id>`", parse_mode="Markdown")
+        return
+
+    target_id = str(tokens[1].strip())
+    banned_list = load_data(BANNED_FILE)
+    if not isinstance(banned_list, list):
+        banned_list = []
+    banned_list = [str(u) for u in banned_list]
+
+    if target_id not in banned_list:
+        banned_list.append(target_id)
+        save_data(BANNED_FILE, banned_list)
+        try:
+            bot.send_message(target_id, "❌ Notice: Your access to this bot has been banned due to suspicious or unwanted activity.")
+        except Exception:
+            pass
+        bot.reply_to(message, f"✅ *User ID `{target_id}` has been banned and notified.*", parse_mode="Markdown")
+
+@bot.message_handler(commands=["unban"])
+def handle_unban_user(message: telebot.types.Message):
+    if message.chat.id != ADMIN_ID:
+        return
+    tokens = message.text.split()
+    if len(tokens) < 2:
+        bot.reply_to(message, "⚠️ *Usage:* `/unban <user_id>`", parse_mode="Markdown")
+        return
+
+    target_id = str(tokens[1].strip())
+    banned_list = load_data(BANNED_FILE)
+    if not isinstance(banned_list, list):
+        banned_list = []
+    banned_list = [str(u) for u in banned_list]
+
+    if target_id in banned_list:
+        banned_list.remove(target_id)
+        save_data(BANNED_FILE, banned_list)
+        try:
+            bot.send_message(target_id, "✅ Notice: Your account has been unbanned. You can now use the bot again.")
+        except Exception:
+            pass
+        bot.reply_to(message, f"✅ *User ID `{target_id}` has been unbanned and notified.*", parse_mode="Markdown")
+
+if __name__ == "__main__":
+    threading.Thread(target=run_flask, daemon=True).start()
+    bot.infinity_polling(timeout=60, long_polling_timeout=30)
