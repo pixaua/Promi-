@@ -2,23 +2,24 @@
 =============================================================================
 7G ULTIMATE TELEGRAM MASTER BOT (ENTERPRISE PRODUCTION EDITION)
 =============================================================================
-Primary Token: 7678905793:AAGMJ0OsQui8jD4kKin1I7Djw-ftb7b79hc
+Primary Token: 7678905793:AAFtjvo1_Z4vPGirwd8AXpzvke3DFPl2QOA
 Master Admin ID: 6162953772
-Meta AI API Key: nxt_3a454c41e6a84aeead28d1fb4aec87a4
+AI Engine: Google Gemini 1.5 Flash (Text) + Pollinations AI (Images)
 =============================================================================
 FEATURES INCLUDED:
   1. Instagram HD Downloader (yt-dlp Native + Instaloader + SaveInsta + Snapinsta)
   2. Multi-Tier TikTok HD Downloader without Watermark (TikWM HD + SnapTik + yt-dlp)
-  3. Meta AI Assistant Chat (/ai or general text) & AI Image Generator (/image)
-  4. Complete User Activity Tracking (Joined date, timestamps, referrals, points)
-  5. Admin Dashboard (/stats & /users) with Serialized Messages & Downloaded Links Lists
-  6. Detailed Single User Inspection (/userinfo <user_id>)
-  7. Ban & Unban System (/ban & /unban) with Instant Direct English Notifications
-  8. Maintenance Mode Control (/maintenance) with Instant Auto-Broadcast to ALL Users
-  9. Admin Global Announcement Engine (/broadcast <message>)
- 10. Auto-Telegram Database Backup to Admin Inbox
- 11. "Create Own Bot" Multi-Bot System (Clone any bot token live without sub-cloning)
- 12. 24/7 Keep-Alive Flask Server & Self-Ping Loop for Render/Railway/VPS
+  3. Google Gemini 1.5 Flash AI Assistant (/ai or natural chat in Bengali & English)
+  4. Pollinations AI Ultra Image Generator (/image <prompt>)
+  5. Complete User Activity Tracking (Joined date, timestamps, referrals, points)
+  6. Admin Dashboard (/stats & /users) with Serialized Messages & Downloaded Links Lists
+  7. Detailed Single User Inspection (/userinfo <user_id>)
+  8. Ban & Unban System (/ban & /unban) with Instant Direct English Notifications
+  9. Maintenance Mode Control (/maintenance) with Instant Auto-Broadcast to ALL Users
+ 10. Admin Global Announcement Engine (/broadcast <message>)
+ 11. Auto-Telegram Database Backup to Admin Inbox
+ 12. "Create Own Bot" Multi-Bot System (Clone any bot token live without sub-cloning)
+ 13. 24/7 Keep-Alive Flask Server & Self-Ping Loop for Render/Railway/VPS
 =============================================================================
 """
 
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import base64
 import html
+import io
 import json
 import logging
 import os
@@ -38,10 +40,8 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Any, Callable
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urlparse
-from urllib.request import Request, urlopen
+from typing import Any
+from urllib.parse import quote
 
 # Ensure unbuffered standard output for real-time logs on Render/Docker
 try:
@@ -53,6 +53,7 @@ except Exception:
 import requests
 from flask import Flask, jsonify
 import telebot
+from telebot import types
 import yt_dlp
 
 # ----------------- LOGGING CONFIGURATION ----------------- #
@@ -72,16 +73,18 @@ def log_error(message: str, *args: Any) -> None:
     sys.stderr.flush()
 
 # ----------------- CONFIGURATION ----------------- #
-MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAGMJ0OsQui8jD4kKin1I7Djw-ftb7b79hc").strip()
+MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAFtjvo1_Z4vPGirwd8AXpzvke3DFPl2QOA").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6162953772"))
 
-META_AI_KEY = os.getenv("META_AI_API_KEY", "nxt_3a454c41e6a84aeead28d1fb4aec87a4").strip()
-META_AI_GEM_ID = os.getenv("META_AI_GEM_ID", "ba0fbe0d-976e-493a-afdb-6d8469e53df0")
-META_AI_ENDPOINT = f"https://nxtai.zipohostbd.workers.dev/api/use?gem={META_AI_GEM_ID}"
-IMAGE_FALLBACK_ENDPOINT = "https://image.pollinations.ai/prompt/"
-TIKWM_ENDPOINT = "https://www.tikwm.com/api/"
-SNAPTIK_ENDPOINT = "https://snaptik.app/abc2.php"
+# Google Gemini 1.5 Flash API Key (dynamically read from Environment)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash").strip()
+GEMINI_ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
+# Pollinations AI Free Image Generator Endpoint
+POLLINATIONS_IMAGE_ENDPOINT = "https://image.pollinations.ai/prompt/"
+
+TIKWM_ENDPOINT = "https://www.tikwm.com/api/"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -99,7 +102,7 @@ CLONES_FILE = os.path.join(DATA_DIR, "clones_db.json")
 
 # State & Concurrency
 FILE_LOCK = threading.RLock()
-EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="7g_worker")
+EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="7g_worker")
 ACTIVE_CLONES: dict[str, telebot.TeleBot] = {}
 AWAITING_BOT_TOKEN: set[int] = set()
 
@@ -110,7 +113,14 @@ app = Flask(__name__)
 # ----------------- FLASK KEEP-ALIVE SERVER ----------------- #
 @app.route("/")
 def home():
-    return "✨ 7G Master Bot is Online & Running 24/7!"
+    has_gemini = "Configured ✅" if (os.getenv("GEMINI_API_KEY") or GEMINI_API_KEY) else "Missing GEMINI_API_KEY ⚠️"
+    return (
+        "✨ <b>7G Master Bot is Online & Running 24/7!</b><br>"
+        f"🤖 AI Engine: Google Gemini 1.5 Flash ({has_gemini})<br>"
+        f"🎨 Image Engine: Pollinations AI Free<br>"
+        f"⚡ Active Clones: {len(ACTIVE_CLONES)}<br>"
+        f"🕒 Server Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
 
 @app.route("/healthz")
 @app.route("/health")
@@ -118,6 +128,8 @@ def healthz():
     return jsonify({
         "status": "ok",
         "service": "7g_master_bot",
+        "gemini_configured": bool(os.getenv("GEMINI_API_KEY") or GEMINI_API_KEY),
+        "gemini_model": GEMINI_MODEL,
         "active_clones": len(ACTIVE_CLONES),
         "timestamp": datetime.now().isoformat()
     }), 200
@@ -339,10 +351,7 @@ def send_admin_alert(user: telebot.types.User, action_type: str, text_data: str,
 # ----------------- ADVANCED DOWNLOAD ENGINES ----------------- #
 
 def download_to_temp_file(media_url: str, referer: str = "https://www.tiktok.com/") -> str | None:
-    """
-    Downloads media directly to a local temporary file with proper browser headers.
-    This prevents Telegram API error: '400 Bad Request: failed to get HTTP URL content'.
-    """
+    """Downloads media directly to a local temporary file with browser headers."""
     try:
         headers = {
             "User-Agent": USER_AGENT,
@@ -357,7 +366,6 @@ def download_to_temp_file(media_url: str, referer: str = "https://www.tiktok.com
                     if chunk:
                         tmp.write(chunk)
                         total_bytes += len(chunk)
-                        # Telegram bot upload limit is 50MB (52428800 bytes)
                         if total_bytes > 49.5 * 1024 * 1024:
                             log_error("Downloaded file exceeded Telegram 50MB limit.")
                             break
@@ -377,13 +385,7 @@ def download_to_temp_file(media_url: str, referer: str = "https://www.tiktok.com
         return None
 
 def download_instagram(url: str) -> str | None:
-    """
-    Instagram Downloader:
-    Method 1: yt-dlp Native Direct Downloader (Downloads MP4 directly to disk)
-    Method 2: Instaloader Native Extractor (by Shortcode)
-    Method 3: yt-dlp Format Extraction Fallback
-    Method 4: SaveInsta / Snapinsta Web Resolver Fallback
-    """
+    """Instagram Downloader with 4-tier fallback."""
     clean_url = url.strip()
     m = re.search(r"https?://(?:www\.)?instagram\.com/(?:reel|p|tv)/[A-Za-z0-9_-]+", clean_url)
     if m:
@@ -394,7 +396,7 @@ def download_instagram(url: str) -> str | None:
     shortcode_match = re.search(r"/(?:reel|p|tv)/([A-Za-z0-9_-]+)", clean_url)
     shortcode = shortcode_match.group(1) if shortcode_match else None
 
-    # Method 1: yt-dlp Native Direct Downloader (Writes MP4 directly to disk with proper browser headers)
+    # Method 1: yt-dlp Native Direct Downloader
     try:
         temp_dir = tempfile.gettempdir()
         prefix = f"ig_{uuid.uuid4().hex[:8]}"
@@ -465,123 +467,41 @@ def download_instagram(url: str) -> str | None:
                     return info['url']
                 if 'formats' in info and info['formats']:
                     for fmt in reversed(info['formats']):
-                        if fmt.get('url'):
+                        if fmt.get('url') and fmt.get('ext') == 'mp4':
                             tmp_file = download_to_temp_file(fmt['url'], referer="https://www.instagram.com/")
                             if tmp_file:
                                 return tmp_file
                             return fmt['url']
-                if 'entries' in info and len(info['entries']) > 0:
-                    first_entry = info['entries'][0]
-                    if first_entry.get('url'):
-                        tmp_file = download_to_temp_file(first_entry['url'], referer="https://www.instagram.com/")
-                        if tmp_file:
-                            return tmp_file
-                        return first_entry['url']
-    except Exception as ydl_info_err:
-        log_error(f"yt-dlp Instagram format extractor failed: {ydl_info_err}")
-
-    # Method 4: SaveInsta / Snapinsta Web Resolver
-    try:
-        headers = {
-            'User-Agent': USER_AGENT,
-            'Referer': 'https://saveinsta.app/',
-            'Accept': 'application/json, text/javascript, */*; q=0.01',
-        }
-        endpoints = [
-            "https://v3.saveinsta.app/api/ajaxSearch",
-            "https://saveinsta.io/api/ajaxSearch",
-            "https://snapinsta.to/api/ajaxSearch"
-        ]
-        for ep in endpoints:
-            try:
-                res = requests.post(ep, data={"q": clean_url, "t": "media", "lang": "en"}, headers=headers, timeout=12)
-                if res.status_code == 200:
-                    resp_json = res.json()
-                    html_content = resp_json.get("data", "")
-                    m_url = re.search(r'href="([^"]+)"[^>]*class="[^"]*btn-download[^"]*"', html_content) or re.search(r'href="([^"]+)"[^>]*download', html_content)
-                    if m_url:
-                        video_link = html.unescape(m_url.group(1))
-                        tmp_file = download_to_temp_file(video_link, referer="https://saveinsta.app/")
-                        if tmp_file:
-                            return tmp_file
-                        return video_link
-            except Exception:
-                pass
-    except Exception as save_err:
-        log_error(f"SaveInsta resolver failed: {save_err}")
+    except Exception as e:
+        log_error(f"yt-dlp format extraction fallback failed: {e}")
 
     return None
 
-def download_tiktok(url: str) -> tuple[str, str]:
-    """
-    TikTok Downloader (HD Without Watermark):
-    Returns: (title, local_filepath_or_url)
-    Uses:
-      1. TikWM API (HD/Normal) -> downloaded locally to bypass Telegram 400 CDN block
-      2. yt-dlp Native Direct Video Extractor & Downloader (Direct to Disk)
-      3. Tiklydown Mirror API -> downloaded locally
-      4. VKR API -> downloaded locally
-    """
+def download_tiktok(url: str) -> str | None:
+    """TikTok Downloader (Multi-Tier HD without Watermark)."""
     clean_url = url.strip()
-    m = re.search(r'https?://(?:www\.|vt\.|vm\.|m\.)?tiktok\.com/[^\s\?]+', clean_url)
-    base_clean_url = m.group(0) if m else clean_url.split("?")[0]
 
-    # Resolve redirects for shortened links (vt.tiktok.com or vm.tiktok.com)
-    if "vt.tiktok.com" in clean_url or "vm.tiktok.com" in clean_url:
-        try:
-            head_resp = requests.head(clean_url, allow_redirects=True, timeout=10, headers={"User-Agent": USER_AGENT})
-            if head_resp.url and "tiktok.com" in head_resp.url:
-                clean_url = head_resp.url
-                m2 = re.search(r'https?://(?:www\.|vt\.|vm\.|m\.)?tiktok\.com/[^\s\?]+', clean_url)
-                base_clean_url = m2.group(0) if m2 else clean_url.split("?")[0]
-        except Exception:
-            pass
+    # Method 1: TikWM HD API
+    try:
+        payload = {"url": clean_url, "hd": 1}
+        headers = {"User-Agent": USER_AGENT}
+        r = requests.post(TIKWM_ENDPOINT, data=payload, headers=headers, timeout=20)
+        if r.status_code == 200:
+            res = r.json()
+            if res.get("code") == 0 and "data" in res:
+                data = res["data"]
+                video_url = data.get("hdplay") or data.get("play")
+                if video_url:
+                    if not video_url.startswith("http"):
+                        video_url = f"https://www.tikwm.com{video_url}"
+                    tmp_file = download_to_temp_file(video_url, referer="https://www.tiktok.com/")
+                    if tmp_file:
+                        return tmp_file
+                    return video_url
+    except Exception as e:
+        log_error(f"TikWM TikTok download failed: {e}")
 
-    # 1. TikWM API (Try POST and GET across mirrors)
-    tikwm_endpoints = ["https://www.tikwm.com/api/", "https://tikwm.com/api/"]
-    for endpoint in tikwm_endpoints:
-        for target_u in [clean_url, base_clean_url]:
-            # POST attempt
-            try:
-                res = requests.post(
-                    endpoint,
-                    data={"url": target_u, "hd": 1},
-                    headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-                    timeout=15
-                ).json()
-                if isinstance(res, dict) and res.get("code") == 0 and "data" in res:
-                    data = res["data"]
-                    title = str(data.get("title") or "TikTok Video")
-                    video_url = data.get("hdplay") or data.get("play") or data.get("wmplay")
-                    if video_url:
-                        if video_url.startswith("/"):
-                            video_url = f"https://www.tikwm.com{video_url}"
-                        tmp_file = download_to_temp_file(video_url, referer="https://www.tikwm.com/")
-                        if tmp_file:
-                            return title, tmp_file
-                        return title, video_url
-            except Exception as e:
-                log_error(f"TikWM POST attempt error on {endpoint}: {e}")
-
-            # GET attempt
-            try:
-                api_url = f"{endpoint}?{urlencode({'url': target_u, 'hd': '1'})}"
-                res = requests.get(api_url, headers={"User-Agent": USER_AGENT}, timeout=15).json()
-                if isinstance(res, dict) and res.get("code") == 0 and "data" in res:
-                    data = res["data"]
-                    title = str(data.get("title") or "TikTok Video")
-                    video_url = data.get("hdplay") or data.get("play") or data.get("wmplay")
-                    if video_url:
-                        if video_url.startswith("/"):
-                            video_url = f"https://www.tikwm.com{video_url}"
-                        tmp_file = download_to_temp_file(video_url, referer="https://www.tikwm.com/")
-                        if tmp_file:
-                            return title, tmp_file
-                        return title, video_url
-            except Exception as e:
-                log_error(f"TikWM GET attempt error on {endpoint}: {e}")
-
-    # 2. yt-dlp Native Direct Downloader (Downloads MP4 directly to server disk)
+    # Method 2: yt-dlp Direct Native Fallback
     try:
         temp_dir = tempfile.gettempdir()
         prefix = f"tt_{uuid.uuid4().hex[:8]}"
@@ -591,963 +511,717 @@ def download_tiktok(url: str) -> tuple[str, str]:
             'outtmpl': out_tmpl,
             'quiet': True,
             'no_warnings': True,
+            'socket_timeout': 30,
             'http_headers': {
                 'User-Agent': USER_AGENT,
-                'Referer': 'https://www.tiktok.com/'
+                'Referer': 'https://www.tiktok.com/',
+                'Accept': '*/*',
             },
-            'socket_timeout': 30,
             'max_filesize': 49 * 1024 * 1024,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(clean_url, download=True)
             if info:
-                title = str(info.get("title") or "TikTok Video")
                 candidate_path = ydl.prepare_filename(info)
                 if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 1000:
-                    return title, candidate_path
+                    return candidate_path
                 for f in os.listdir(temp_dir):
                     if f.startswith(prefix):
                         f_path = os.path.join(temp_dir, f)
                         if os.path.getsize(f_path) > 1000:
-                            return title, f_path
+                            return f_path
     except Exception as ydl_err:
         log_error(f"yt-dlp TikTok fallback failed: {ydl_err}")
 
-    # 3. Tiklydown Mirror Backup
-    try:
-        endpoint = f"https://api.tiklydown.eu.org/api/download?url={quote(clean_url)}"
-        res = requests.get(endpoint, headers={"User-Agent": USER_AGENT}, timeout=15).json()
-        if isinstance(res, dict):
-            title = str(res.get("title") or "TikTok Video")
-            video_url = res.get("video", {}).get("noWatermark") or res.get("video", {}).get("watermark")
-            if video_url:
-                tmp_file = download_to_temp_file(video_url, referer="https://www.tiktok.com/")
-                if tmp_file:
-                    return title, tmp_file
-                return title, video_url
-    except Exception:
-        pass
+    return None
 
-    # 4. VKR Alternative Downloader
-    try:
-        endpoint = f"https://api.vkrdown.com/tiktok/?url={quote(clean_url)}"
-        res = requests.get(endpoint, headers={"User-Agent": USER_AGENT}, timeout=15).json()
-        if isinstance(res, dict) and "data" in res:
-            data = res["data"]
-            title = str(data.get("title") or "TikTok Video")
-            video_url = data.get("hd_play") or data.get("play")
-            if video_url:
-                tmp_file = download_to_temp_file(video_url)
-                if tmp_file:
-                    return title, tmp_file
-                return title, video_url
-    except Exception:
-        pass
+# =============================================================================
+# ----------------- NEW AI ENGINE (GEMINI 1.5 FLASH + POLLINATIONS) ----------
+# =============================================================================
 
-    raise RuntimeError("Could not resolve TikTok video. The video may be private, age-restricted, or temporarily unavailable.")
+def call_gemini_ai(prompt: str, user_name: str = "") -> str:
+    """
+    Google Gemini 1.5 Flash natural language chat engine.
+    - Dynamically reads GEMINI_API_KEY from environment variables.
+    - Responds naturally and respectfully in Bengali and English.
+    - Bulletproof error handling for missing keys or API quota/network issues.
+    """
+    api_key = os.getenv("GEMINI_API_KEY", "").strip() or GEMINI_API_KEY
+    if not api_key:
+        return (
+            "⚠️ <b>Gemini API Key missing!</b>\n"
+            "দয়া করে আপনার হোস্টিং এনভায়রনমেন্টে <code>GEMINI_API_KEY</code> সেট করুন।\n"
+            "Please configure the <code>GEMINI_API_KEY</code> variable in your Render/Server settings."
+        )
 
-# ----------------- META AI & IMAGE GENERATION ----------------- #
+    url = f"{GEMINI_ENDPOINT}?key={api_key}"
+    headers = {"Content-Type": "application/json"}
 
-def ai_request(message: str) -> Any:
-    if not META_AI_KEY:
-        raise RuntimeError("META_AI_API_KEY is not configured")
-    res = requests.post(
-        META_AI_ENDPOINT,
-        json={"api_key": META_AI_KEY, "message": message},
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
-        timeout=60
+    system_instruction = (
+        "You are 7G AI, an ultra-smart, helpful, friendly, and respectful assistant created by the 7G Master Team. "
+        "You communicate fluently and naturally in both Bengali (বাংলা) and English. "
+        "Match the language of the user: if the user writes in Bengali or Banglish, answer in clear, beautiful Bengali. "
+        "If the user writes in English, answer in polished English. "
+        "Keep your formatting clean, structured, and pleasant using emojis, bullet points, and code blocks where helpful. "
+        "Be concise yet comprehensive."
     )
-    return res.json()
 
-def extract_text(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        for key in ("response", "reply", "message", "text", "content", "answer", "output"):
-            if key in value:
-                res = extract_text(value[key])
-                if res:
-                    return res
-        for nested in value.values():
-            res = extract_text(nested)
-            if res:
-                return res
-    if isinstance(value, list):
-        return "\n".join(res for item in value if (res := extract_text(item)))
-    return ""
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": prompt.strip()}]
+            }
+        ],
+        "systemInstruction": {
+            "parts": [{"text": system_instruction}]
+        },
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 2048,
+            "topP": 0.95
+        }
+    }
 
-def extract_image(value: Any) -> tuple[str | None, bytes | None]:
-    if isinstance(value, dict):
-        for key, nested in value.items():
-            lower = key.lower()
-            if isinstance(nested, str) and nested.startswith(("http://", "https://")):
-                if any(word in lower for word in ("image", "photo", "picture", "url", "src")):
-                    return nested, None
-            if isinstance(nested, str) and nested.startswith("data:image/"):
-                try:
-                    return None, base64.b64decode(nested.split(",", 1)[1])
-                except Exception:
-                    pass
-            url, raw = extract_image(nested)
-            if url or raw:
-                return url, raw
-    elif isinstance(value, list):
-        for nested in value:
-            url, raw = extract_image(nested)
-            if url or raw:
-                return url, raw
-    return None, None
-
-def fallback_image_url(prompt: str) -> str:
-    cleaned = re.sub(r"\s+", " ", prompt).strip()[:650]
-    return f"{IMAGE_FALLBACK_ENDPOINT}{quote(cleaned, safe='')}?width=1024&height=1024&nologo=true"
-
-def send_ai_response(bot_instance: telebot.TeleBot, chat_id: int, prompt: str, status_id: int) -> None:
     try:
-        response = ai_request(prompt)
-        image_url, image_bytes = extract_image(response)
-        text = extract_text(response).strip()
-        is_image_cmd = prompt.lstrip().lower().startswith("/image")
-
-        if is_image_cmd and not image_url and not image_bytes:
-            clean_prompt = prompt.lstrip()[len("/image"):].strip()
-            image_url = fallback_image_url(clean_prompt or "Futuristic glowing art")
-
-        if image_url:
-            bot_instance.send_photo(chat_id, image_url, caption="✨ <b>Generated by Meta AI Assistant</b>", parse_mode="HTML")
-        elif image_bytes:
-            bot_instance.send_photo(chat_id, image_bytes, caption="✨ <b>Generated by Meta AI Assistant</b>", parse_mode="HTML")
-
-        if is_image_cmd:
-            try:
-                bot_instance.delete_message(chat_id, status_id)
-            except Exception:
-                bot_instance.edit_message_text("🖼️ Your image has been generated above!", chat_id, status_id)
-            return
-
-        final_text = text if text else "I have processed your query. How else may I assist you?"
-        if len(final_text) > TELEGRAM_CHUNK_LIMIT:
-            try:
-                bot_instance.delete_message(chat_id, status_id)
-            except Exception:
-                pass
-            chunk_and_send(bot_instance, chat_id, f"🤖 <b>AI Assistant:</b>\n\n{escape(final_text)}", parse_mode="HTML")
+        response = requests.post(url, headers=headers, json=payload, timeout=35)
+        if response.status_code == 200:
+            data = response.json()
+            candidates = data.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts and "text" in parts[0]:
+                    return parts[0]["text"].strip()
+            return "দুঃখিত, কোনো উত্তর পাওয়া যায়নি। অনুগ্রহ করে আবার চেষ্টা করুন।"
+        elif response.status_code == 400:
+            log_error("Gemini 400 Bad Request: %s", response.text)
+            return "⚠️ অনুরোধটি প্রক্রিয়াকরণ করা যায়নি (Bad Request)। অনুগ্রহ করে প্রম্পট পরিবর্তন করে চেষ্টা করুন।"
+        elif response.status_code == 429:
+            log_error("Gemini 429 Quota Exceeded: %s", response.text)
+            return "⏳ এআই বর্তমানে খুব ব্যস্ত। দয়া করে কয়েক সেকেন্ড পর আবার চেষ্টা করুন (Rate limit exceeded)।"
         else:
-            bot_instance.edit_message_text(f"🤖 <b>AI Assistant:</b>\n\n{escape(final_text)}", chat_id, status_id, parse_mode="HTML")
-    except Exception as error:
-        log_error("AI Assistant processing error: %s", error)
-        try:
-            bot_instance.edit_message_text("⚠️ <i>AI Assistant is temporarily busy. Please try again in a few moments.</i>", chat_id, status_id, parse_mode="HTML")
-        except Exception:
-            pass
+            log_error("Gemini API Error %s: %s", response.status_code, response.text)
+            return f"⚠️ এআই সার্ভার রেসপন্স দেয়নি (Error {response.status_code})। কিছুক্ষণ পর চেষ্টা করুন।"
+    except requests.exceptions.Timeout:
+        log_error("Gemini request timed out.")
+        return "⏱️ অনুরোধের সময়সীমা শেষ হয়েছে (Timeout)। দয়া করে আবার চেষ্টা করুন।"
+    except Exception as e:
+        log_error("Gemini AI Exception: %s", e)
+        return f"⚠️ কোনো একটি সমস্যা হয়েছে: {escape(str(e))}"
 
-# ----------------- BOT FACTORY & HANDLER REGISTRATION ----------------- #
+def generate_pollinations_image(prompt: str) -> tuple[str | None, bytes | None]:
+    """
+    Pollinations AI Image Generator:
+    Creates high-resolution AI images via Pollinations AI free endpoint.
+    Downloads the image stream directly to bytes to guarantee seamless Telegram delivery.
+    """
+    clean_prompt = prompt.strip()
+    encoded = quote(clean_prompt)
+    seed = random.randint(1000, 999999)
+    image_url = f"{POLLINATIONS_IMAGE_ENDPOINT}{encoded}?width=1024&height=1024&seed={seed}&nologo=true"
 
-def get_menu_keyboard(is_clone: bool = False) -> telebot.types.ReplyKeyboardMarkup:
-    """
-    Builds the reply keyboard:
-    - Main Bot: [📊 My Stats, 🔗 Referral Link] and [🤖 Create Own Bot]
-    - Clone Bot: [📊 My Stats, 🔗 Referral Link] ONLY (sub-cloning disabled!)
-    """
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    if is_clone:
-        markup.add(
-            telebot.types.KeyboardButton("📊 My Stats"),
-            telebot.types.KeyboardButton("🔗 Referral Link")
-        )
-    else:
-        markup.add(
-            telebot.types.KeyboardButton("📊 My Stats"),
-            telebot.types.KeyboardButton("🔗 Referral Link")
-        )
-        markup.add(
-            telebot.types.KeyboardButton("🤖 Create Own Bot")
-        )
+    try:
+        headers = {"User-Agent": USER_AGENT}
+        resp = requests.get(image_url, headers=headers, timeout=50)
+        if resp.status_code == 200 and len(resp.content) > 5000:
+            return image_url, resp.content
+    except Exception as e:
+        log_error("Pollinations image generation error: %s", e)
+
+    return image_url, None
+
+# ----------------- TELEGRAM BOT HANDLERS ----------------- #
+
+def is_maintenance_active() -> bool:
+    return bool(get_config().get("maintenance", False))
+
+def make_start_keyboard() -> types.InlineKeyboardMarkup:
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    b1 = types.InlineKeyboardButton("💬 Ask AI", switch_inline_query_current_chat="/ai ")
+    b2 = types.InlineKeyboardButton("🎨 Generate Image", switch_inline_query_current_chat="/image ")
+    b3 = types.InlineKeyboardButton("🤖 Create Own Bot", callback_data="clone_bot")
+    b4 = types.InlineKeyboardButton("📊 My Stats", callback_data="my_stats")
+    markup.add(b1, b2)
+    markup.add(b3, b4)
     return markup
 
-def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False):
-    """
-    Registers all commands, link downloaders, and admin panels to any bot instance.
-    Guarantees that clone bots do not contain the 'Create Own Bot' facility.
-    """
+@bot.message_handler(commands=["start"])
+def handle_start(message: types.Message):
+    user = message.from_user
+    if is_banned(user.id):
+        safe_reply(bot, message, "⛔ <b>You are banned from using this bot.</b>")
+        return
 
-    # /start handler
-    @bot_instance.message_handler(commands=['start'])
-    def handle_start(message: telebot.types.Message):
-        if is_banned(message.chat.id):
-            safe_reply(bot_instance, message, "❌ <b>Notice: You are banned from using this bot!</b>", parse_mode="HTML")
-            return
+    if is_maintenance_active() and user.id != ADMIN_ID:
+        safe_reply(bot, message, "🛠️ <b>Bot is currently undergoing maintenance. Please check back shortly!</b>")
+        return
 
-        config = get_config()
-        if config.get("maintenance", False) and message.chat.id != ADMIN_ID:
-            safe_reply(
-                bot_instance,
-                message,
-                "⚠️ Notice: The bot is currently undergoing system security updates and maintenance. It is temporarily unavailable. Please try again later!",
-                parse_mode=None
-            )
-            return
+    referred_by = None
+    parts = message.text.split()
+    if len(parts) > 1 and parts[1].isdigit() and str(user.id) != parts[1]:
+        referred_by = parts[1]
 
-        args = (message.text or "").split()
-        referred_by = args[1] if len(args) > 1 and args[1].isdigit() and args[1] != str(message.chat.id) else None
+    track_user_activity(user, "Command: /start", message.text, referred_by=referred_by)
 
-        track_user_activity(message.from_user, "Start Command / New Visitor", message.text or "/start", referred_by)
-
-        markup = get_menu_keyboard(is_clone=is_clone)
-        welcome_text = (
-            "✨🔥 <b>Welcome to 7G Ultimate Bot!</b> 🔥✨\n\n"
-            "📥 <b>Video Downloader:</b>\n"
-            "• <b>Instagram:</b> Send any Post/Reel link for instant HD download!\n"
-            "• <b>TikTok:</b> Send any TikTok link for Watermark-Free HD video!\n\n"
-            "🤖 <b>Meta AI Assistant:</b> Type anything or ask with <code>/ai &lt;query&gt;</code>\n"
-            "🎨 <b>AI Image Generator:</b> Create pictures with <code>/image &lt;prompt&gt;</code>\n\n"
-            "👇 <b>Use the buttons below for quick navigation!</b>"
-        )
-        safe_reply(bot_instance, message, welcome_text, reply_markup=markup, parse_mode="HTML")
-
-    # /mystats handler
-    @bot_instance.message_handler(commands=['mystats'])
-    def handle_my_stats(message: telebot.types.Message):
-        if is_banned(message.chat.id):
-            return
-        users_db = load_data(USER_FILE)
-        user_info = users_db.get(str(message.chat.id), {})
-
-        msgs = user_info.get("msg_count", 0)
-        downloads = user_info.get("downloads_count", 0)
-        first_seen = user_info.get("first_seen", "N/A")
-        refs = len(user_info.get("referrals", []))
-        points = user_info.get("points", 0)
-
-        stats_msg = (
-            f"📊 <b>Your Personal Bot Statistics</b> 🌟\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📅 <b>Joined Date:</b> <code>{first_seen}</code>\n"
-            f"💬 <b>Total Messages Sent:</b> <code>{msgs}</code>\n"
-            f"📥 <b>Total Videos Downloaded:</b> <code>{downloads}</code>\n"
-            f"👥 <b>Total Referrals:</b> <code>{refs}</code> (Points: <code>{points}</code>)\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚡ <b>Thanks for using 7G Bot!</b> ❤️"
-        )
-        safe_reply(bot_instance, message, stats_msg, parse_mode="HTML")
-
-    # /stats & /users handler (ADMIN ONLY)
-    @bot_instance.message_handler(commands=['stats', 'users'])
-    def handle_admin_stats(message: telebot.types.Message):
-        if message.chat.id != ADMIN_ID:
-            return
-
-        users_db = load_data(USER_FILE)
-        if not isinstance(users_db, dict) or not users_db:
-            safe_reply(bot_instance, message, "📂 <b>Database is currently empty. No users found.</b>", parse_mode="HTML")
-            return
-
-        total_users = len(users_db)
-        total_downloads = sum(u.get("downloads_count", 0) for u in users_db.values())
-        total_messages = sum(u.get("msg_count", 0) for u in users_db.values())
-        total_clones = len(ACTIVE_CLONES)
-
-        header = (
-            f"👑 <b>ADMIN DASHBOARD — FULL USER DATABASE</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"👥 <b>Total Users:</b> <code>{total_users}</code>\n"
-            f"📥 <b>Total Global Downloads:</b> <code>{total_downloads}</code>\n"
-            f"💬 <b>Total Global Messages:</b> <code>{total_messages}</code>\n"
-            f"🤖 <b>Active Cloned Bots:</b> <code>{total_clones}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        )
-
-        user_blocks: list[str] = [header]
-
-        for index, (uid, info) in enumerate(users_db.items(), start=1):
-            name = escape(info.get("first_name", "Unknown"))
-            uname = escape(info.get("username", "No Username"))
-            dl_count = info.get("downloads_count", 0)
-            msg_count = info.get("msg_count", 0)
-            first_seen = info.get("first_seen", "N/A")
-            last_seen = info.get("last_seen", "N/A")
-
-            # Serialized Messages List
-            messages_list = info.get("messages", [])
-            if messages_list:
-                serialized_msgs = "\n".join(
-                    [f"    {i}. \"{escape(m[:120])}\"" for i, m in enumerate(messages_list, start=1)]
-                )
-            else:
-                serialized_msgs = "    <i>(No standalone text messages)</i>"
-
-            # Serialized Downloaded Links List
-            links_list = info.get("download_links", [])
-            if links_list:
-                serialized_links = "\n".join(
-                    [f"    {i}. <code>{escape(l)}</code>" for i, l in enumerate(links_list, start=1)]
-                )
-            else:
-                serialized_links = "    <i>(No downloaded links yet)</i>"
-
-            user_block = (
-                f"👤 <b>User #{index}:</b> {name} ({uname})\n"
-                f"🆔 <b>User ID:</b> <code>{uid}</code>\n"
-                f"📅 <b>First Seen:</b> <code>{first_seen}</code> | <b>Last Seen:</b> <code>{last_seen}</code>\n"
-                f"📥 <b>Downloads:</b> <code>{dl_count}</code> | 💬 <b>Messages:</b> <code>{msg_count}</code>\n"
-                f"💬 <b>Serialized Messages List:</b>\n{serialized_msgs}\n"
-                f"🔗 <b>Serialized Downloaded Links List:</b>\n{serialized_links}\n"
-                f"──────────────────────────────\n"
-            )
-            user_blocks.append(user_block)
-
-        full_output = "\n".join(user_blocks)
-        chunk_and_send(bot_instance, message.chat.id, full_output, parse_mode="HTML")
-
-    # /userinfo <user_id> handler (ADMIN ONLY)
-    @bot_instance.message_handler(commands=['userinfo'])
-    def handle_user_info(message: telebot.types.Message):
-        if message.chat.id != ADMIN_ID:
-            return
-        tokens = (message.text or "").split()
-        if len(tokens) < 2:
-            safe_reply(bot_instance, message, "⚠️ <b>Usage:</b> <code>/userinfo &lt;user_id&gt;</code>", parse_mode="HTML")
-            return
-
-        target_id = tokens[1].strip()
-        users_db = load_data(USER_FILE)
-        if target_id not in users_db:
-            safe_reply(bot_instance, message, f"❌ <b>User ID <code>{target_id}</code> not found in database.</b>", parse_mode="HTML")
-            return
-
-        info = users_db[target_id]
-        name = escape(info.get("first_name", "Unknown"))
-        uname = escape(info.get("username", "No Username"))
-        msg_count = info.get("msg_count", 0)
-        dl_count = info.get("downloads_count", 0)
-        first_seen = info.get("first_seen", "N/A")
-        last_seen = info.get("last_seen", "N/A")
-        referred_by = info.get("referred_by") or "None (Direct)"
-        referrals = info.get("referrals", [])
-
-        # Serialized Messages List
-        messages_list = info.get("messages", [])
-        if messages_list:
-            serialized_msgs = "\n".join(
-                [f"  {i}. \"{escape(m)}\"" for i, m in enumerate(messages_list, start=1)]
-            )
-        else:
-            serialized_msgs = "  <i>(No text messages recorded)</i>"
-
-        # Serialized Download Links List
-        links_list = info.get("download_links", [])
-        if links_list:
-            serialized_links = "\n".join(
-                [f"  {i}. <code>{escape(l)}</code>" for i, l in enumerate(links_list, start=1)]
-            )
-        else:
-            serialized_links = "  <i>(No downloaded links recorded)</i>"
-
-        details = (
-            f"🔍 <b>DETAILED USER PROFILE & ACTIVITY LOG</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"👤 <b>Name:</b> {name}\n"
-            f"🔗 <b>Username:</b> {uname}\n"
-            f"🆔 <b>User ID:</b> <code>{target_id}</code>\n"
-            f"🌐 <b>Lang:</b> <code>{escape(info.get('language_code', 'N/A'))}</code>\n"
-            f"📅 <b>Joined Date:</b> <code>{first_seen}</code>\n"
-            f"⏱️ <b>Last Activity:</b> <code>{last_seen}</code>\n"
-            f"👥 <b>Referred By:</b> <code>{referred_by}</code>\n"
-            f"🎯 <b>Invited Users Count:</b> <code>{len(referrals)}</code>\n"
-            f"💬 <b>Total Messages:</b> <code>{msg_count}</code>\n"
-            f"📥 <b>Total Downloads:</b> <code>{dl_count}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💬 <b>ALL SENT MESSAGES (SERIALIZED):</b>\n{serialized_msgs}\n\n"
-            f"🔗 <b>ALL DOWNLOADED LINKS (SERIALIZED):</b>\n{serialized_links}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        )
-        chunk_and_send(bot_instance, message.chat.id, details, parse_mode="HTML")
-
-    # /maintenance handler (ADMIN ONLY)
-    @bot_instance.message_handler(commands=['maintenance'])
-    def handle_maintenance(message: telebot.types.Message):
-        if message.chat.id != ADMIN_ID:
-            return
-
-        config = get_config()
-        current_status = config.get("maintenance", False)
-        new_status = not current_status
-        config["maintenance"] = new_status
-        save_data(CONFIG_FILE, config, trigger_backup=False)
-
-        if new_status:
-            safe_reply(
-                bot_instance,
-                message,
-                "🛠️ <b>Maintenance mode turned ON! Broadcasting notice to all registered users...</b>",
-                parse_mode="HTML"
-            )
-            EXECUTOR.submit(broadcast_maintenance_notice, message.chat.id)
-        else:
-            safe_reply(
-                bot_instance,
-                message,
-                "✅ <b>Maintenance mode turned OFF! The bot is now unlocked and accessible for everyone.</b>",
-                parse_mode="HTML"
-            )
-
-    # /ban <user_id> handler (ADMIN ONLY)
-    @bot_instance.message_handler(commands=['ban'])
-    def handle_ban(message: telebot.types.Message):
-        if message.chat.id != ADMIN_ID:
-            return
-        tokens = (message.text or "").split()
-        if len(tokens) < 2:
-            safe_reply(bot_instance, message, "⚠️ <b>Usage:</b> <code>/ban &lt;user_id&gt;</code>", parse_mode="HTML")
-            return
-
-        target_id = str(tokens[1].strip())
-        if target_id == str(ADMIN_ID):
-            safe_reply(bot_instance, message, "⚠️ <b>Cannot ban the Admin account.</b>", parse_mode="HTML")
-            return
-
-        banned_list = load_data(BANNED_FILE)
-        if not isinstance(banned_list, list):
-            banned_list = []
-        banned_list = [str(u) for u in banned_list]
-
-        if target_id in banned_list:
-            safe_reply(bot_instance, message, f"⚠️ <b>User ID <code>{target_id}</code> is already in the ban list.</b>", parse_mode="HTML")
-            return
-
-        banned_list.append(target_id)
-        save_data(BANNED_FILE, banned_list, trigger_backup=False)
-
-        # Send mandatory notification to banned user
-        notified = False
-        try:
-            ban_notice = "❌ Notice: Your access to this bot has been banned due to suspicious or unwanted activity."
-            bot.send_message(target_id, ban_notice)
-            notified = True
-        except Exception:
-            pass
-
-        notify_status = "and notified ✅" if notified else "but user could not be reached ⚠️"
-        safe_reply(bot_instance, message, f"✅ <b>User ID <code>{target_id}</code> has been banned {notify_status}.</b>", parse_mode="HTML")
-
-    # /unban <user_id> handler (ADMIN ONLY)
-    @bot_instance.message_handler(commands=['unban'])
-    def handle_unban(message: telebot.types.Message):
-        if message.chat.id != ADMIN_ID:
-            return
-        tokens = (message.text or "").split()
-        if len(tokens) < 2:
-            safe_reply(bot_instance, message, "⚠️ <b>Usage:</b> <code>/unban &lt;user_id&gt;</code>", parse_mode="HTML")
-            return
-
-        target_id = str(tokens[1].strip())
-        banned_list = load_data(BANNED_FILE)
-        if not isinstance(banned_list, list):
-            banned_list = []
-        banned_list = [str(u) for u in banned_list]
-
-        if target_id not in banned_list:
-            safe_reply(bot_instance, message, f"⚠️ <b>User ID <code>{target_id}</code> is not in the ban list.</b>", parse_mode="HTML")
-            return
-
-        banned_list.remove(target_id)
-        save_data(BANNED_FILE, banned_list, trigger_backup=False)
-
-        # Send mandatory notification to unbanned user
-        notified = False
-        try:
-            unban_notice = "✅ Notice: Your account has been unbanned. You can now use the bot again."
-            bot.send_message(target_id, unban_notice)
-            notified = True
-        except Exception:
-            pass
-
-        notify_status = "and notified ✅" if notified else "but user could not be reached ⚠️"
-        safe_reply(bot_instance, message, f"✅ <b>User ID <code>{target_id}</code> has been unbanned {notify_status}.</b>", parse_mode="HTML")
-
-    # /broadcast <message> handler (ADMIN ONLY)
-    @bot_instance.message_handler(commands=['broadcast'])
-    def handle_broadcast(message: telebot.types.Message):
-        if message.chat.id != ADMIN_ID:
-            return
-
-        announcement = (message.text or "")[len("/broadcast"):].strip()
-        if not announcement:
-            safe_reply(bot_instance, message, "⚠️ <b>Usage:</b> <code>/broadcast Your message here</code>", parse_mode="HTML")
-            return
-
-        users_db = load_data(USER_FILE)
-        if not isinstance(users_db, dict) or not users_db:
-            safe_reply(bot_instance, message, "❌ <b>No users found in database.</b>", parse_mode="HTML")
-            return
-
-        safe_reply(bot_instance, message, f"🚀 <b>Broadcasting announcement to {len(users_db)} users...</b>", parse_mode="HTML")
-        EXECUTOR.submit(execute_broadcast, message.chat.id, announcement)
-
-    # General incoming messages and link processor
-    @bot_instance.message_handler(func=lambda message: True)
-    def process_incoming_text(message: telebot.types.Message):
-        if is_banned(message.chat.id):
-            safe_reply(bot_instance, message, "❌ <b>Notice: Your access to this bot is currently banned.</b>", parse_mode="HTML")
-            return
-
-        config = get_config()
-        if config.get("maintenance", False) and message.chat.id != ADMIN_ID:
-            safe_reply(
-                bot_instance,
-                message,
-                "⚠️ Notice: The bot is currently undergoing system security updates and maintenance. It is temporarily unavailable. Please try again later!",
-                parse_mode=None
-            )
-            return
-
-        text = (message.text or "").strip()
-
-        # Handle keyboard buttons
-        if text == "📊 My Stats":
-            handle_my_stats(message)
-            return
-
-        elif text == "🔗 Referral Link":
-            try:
-                me = bot_instance.get_me()
-                ref_link = f"https://t.me/{me.username}?start={message.chat.id}"
-                safe_reply(
-                    bot_instance,
-                    message,
-                    f"👥 <b>Your Personal Referral Link:</b>\n<code>{ref_link}</code>\n\n"
-                    f"<i>Share this link with your friends to invite them! Each friend invited earns you reward points.</i> ✨",
-                    parse_mode="HTML"
-                )
-            except Exception:
-                safe_reply(bot_instance, message, f"🔗 <b>Your Invite ID:</b> <code>{message.chat.id}</code>", parse_mode="HTML")
-            return
-
-        # 'Create Own Bot' flow (AVAILABLE ONLY ON MAIN BOT)
-        elif text == "🤖 Create Own Bot" or text == "/createbot":
-            if is_clone:
-                safe_reply(bot_instance, message, "⚠️ <i>This cloned bot cannot create further sub-bots.</i>", parse_mode="HTML")
-                return
-
-            AWAITING_BOT_TOKEN.add(message.chat.id)
-            prompt_text = (
-                "🤖 <b>Create & Host Your Own 7G Bot For FREE!</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━\n"
-                "1. Go to @BotFather on Telegram.\n"
-                "2. Create a new bot with <code>/newbot</code> and copy your <b>Bot Token</b>.\n"
-                "3. <b>Paste and send your Bot Token directly here in this chat!</b>\n\n"
-                "⚡ <i>Your personal bot will instantly go LIVE with all Instagram, TikTok HD & AI features!</i>"
-            )
-            safe_reply(bot_instance, message, prompt_text, parse_mode="HTML")
-            return
-
-        # Check if user is sending a bot token for cloning
-        if not is_clone and message.chat.id in AWAITING_BOT_TOKEN:
-            candidate_token = text
-            if re.match(r"^\d{8,12}:[a-zA-Z0-9_-]{35}$", candidate_token):
-                AWAITING_BOT_TOKEN.discard(message.chat.id)
-                safe_reply(bot_instance, message, "⏳ <i>Verifying token and launching your cloned bot...</i>", parse_mode="HTML")
-                EXECUTOR.submit(launch_user_clone_bot, message, candidate_token)
-                return
-            else:
-                AWAITING_BOT_TOKEN.discard(message.chat.id)
-                # Not a token, proceed to normal message handling
-
-        # Explicit /ai command
-        if text.startswith("/ai"):
-            prompt = text[len("/ai"):].strip()
-            if prompt:
-                track_user_activity(message.from_user, "AI Query", text)
-                status_msg = bot_instance.reply_to(message, "💭 <i>Thinking... Please wait.</i>", parse_mode="HTML")
-                EXECUTOR.submit(send_ai_response, bot_instance, message.chat.id, prompt, status_msg.message_id)
-            else:
-                safe_reply(bot_instance, message, "⚠️ <b>Usage:</b> <code>/ai &lt;your question here&gt;</code>", parse_mode="HTML")
-            return
-
-        # Explicit /image command
-        if text.startswith("/image"):
-            prompt = text[len("/image"):].strip()
-            if prompt:
-                track_user_activity(message.from_user, "AI Image Request", text)
-                status_msg = bot_instance.reply_to(message, "🎨 <i>Generating your AI image... Please wait.</i>", parse_mode="HTML")
-                EXECUTOR.submit(send_ai_response, bot_instance, message.chat.id, f"/image {prompt}", status_msg.message_id)
-            else:
-                safe_reply(bot_instance, message, "⚠️ <b>Usage:</b> <code>/image &lt;detailed image description&gt;</code>", parse_mode="HTML")
-            return
-
-        # Instagram Downloader
-        if "instagram.com" in text.lower():
-            track_user_activity(message.from_user, "Instagram Download", text)
-            status_msg = bot_instance.reply_to(message, "⏳ <b>Downloading Instagram media, please hold on...</b> 🚀", parse_mode="HTML")
-            EXECUTOR.submit(handle_instagram_task, bot_instance, message, text, status_msg.message_id)
-            return
-
-        # TikTok Downloader (HD Watermark-Free)
-        if "tiktok.com" in text.lower() or "vt.tiktok.com" in text.lower():
-            track_user_activity(message.from_user, "TikTok Download", text)
-            status_msg = bot_instance.reply_to(message, "⏳ <b>Downloading TikTok video without watermark...</b> 🎵", parse_mode="HTML")
-            EXECUTOR.submit(handle_tiktok_task, bot_instance, message, text, status_msg.message_id)
-            return
-
-        # General Text -> AI Chat Assistant Fallback
-        track_user_activity(message.from_user, "General Chat", text)
-        status_msg = bot_instance.reply_to(message, "💭 <i>Thinking...</i>", parse_mode="HTML")
-        EXECUTOR.submit(send_ai_response, bot_instance, message.chat.id, text, status_msg.message_id)
-
-def handle_instagram_task(bot_instance: telebot.TeleBot, message: telebot.types.Message, url: str, status_msg_id: int):
-    local_file = None
-    try:
-        video_url = download_instagram(url)
-        if video_url:
-            caption_text = "📥 <b>Downloaded via 7G Bot</b>\n⚡ <i>Fast & High Quality</i> ✨"
-            if os.path.isfile(video_url):
-                local_file = video_url
-                with open(local_file, "rb") as vf:
-                    try:
-                        bot_instance.send_video(
-                            message.chat.id,
-                            vf,
-                            caption=caption_text,
-                            parse_mode="HTML",
-                            supports_streaming=True,
-                            timeout=120
-                        )
-                    except Exception:
-                        vf.seek(0)
-                        bot_instance.send_document(
-                            message.chat.id,
-                            vf,
-                            caption=caption_text,
-                            parse_mode="HTML"
-                        )
-            else:
-                local_file = download_to_temp_file(video_url, referer="https://www.instagram.com/")
-                if local_file and os.path.exists(local_file):
-                    with open(local_file, "rb") as vf:
-                        try:
-                            bot_instance.send_video(
-                                message.chat.id,
-                                vf,
-                                caption=caption_text,
-                                parse_mode="HTML",
-                                supports_streaming=True,
-                                timeout=120
-                            )
-                        except Exception:
-                            vf.seek(0)
-                            bot_instance.send_document(
-                                message.chat.id,
-                                vf,
-                                caption=caption_text,
-                                parse_mode="HTML"
-                            )
-                else:
-                    bot_instance.send_video(
-                        message.chat.id,
-                        video_url,
-                        caption=caption_text,
-                        parse_mode="HTML",
-                        supports_streaming=True
-                    )
-            try:
-                bot_instance.delete_message(message.chat.id, status_msg_id)
-            except Exception:
-                pass
-        else:
-            bot_instance.edit_message_text(
-                "❌ <b>Unfortunately, nothing was found or Instagram blocked the request. Try another link! 🥺</b>",
-                message.chat.id,
-                status_msg_id,
-                parse_mode="HTML"
-            )
-    except Exception as e:
-        log_error(f"Instagram download error: {e}")
-        bot_instance.edit_message_text(
-            f"❌ <b>Instagram download failed.</b>\n<i>{escape(str(e))}</i>",
-            message.chat.id,
-            status_msg_id,
-            parse_mode="HTML"
-        )
-    finally:
-        if local_file and os.path.exists(local_file):
-            try:
-                os.remove(local_file)
-            except Exception:
-                pass
-
-def handle_tiktok_task(bot_instance: telebot.TeleBot, message: telebot.types.Message, url: str, status_msg_id: int):
-    local_file = None
-    try:
-        title, file_or_url = download_tiktok(url)
-        caption_text = f"📥 <b>{escape(title[:240])}</b>\n\n🎵 <b>TikTok HD No-Watermark</b> ✨\n⚡ <i>Downloaded via 7G Bot</i>"
-        
-        if os.path.isfile(file_or_url):
-            local_file = file_or_url
-            with open(local_file, "rb") as vf:
-                bot_instance.send_video(
-                    message.chat.id,
-                    vf,
-                    caption=caption_text,
-                    parse_mode="HTML",
-                    supports_streaming=True,
-                    timeout=120
-                )
-        else:
-            # Download file locally to avoid Telegram's '400 Bad Request: failed to get HTTP URL content' error
-            local_file = download_to_temp_file(file_or_url, referer="https://www.tiktok.com/")
-            if local_file and os.path.exists(local_file):
-                with open(local_file, "rb") as vf:
-                    bot_instance.send_video(
-                        message.chat.id,
-                        vf,
-                        caption=caption_text,
-                        parse_mode="HTML",
-                        supports_streaming=True,
-                        timeout=120
-                    )
-            else:
-                # Direct URL fallback
-                bot_instance.send_video(
-                    message.chat.id,
-                    file_or_url,
-                    caption=caption_text,
-                    parse_mode="HTML",
-                    supports_streaming=True
-                )
-
-        try:
-            bot_instance.delete_message(message.chat.id, status_msg_id)
-        except Exception:
-            pass
-    except Exception as e:
-        log_error(f"TikTok download error: {e}")
-        bot_instance.edit_message_text(
-            f"❌ <b>Failed to fetch TikTok video 🥺</b>\n<i>{escape(str(e))}</i>",
-            message.chat.id,
-            status_msg_id,
-            parse_mode="HTML"
-        )
-    finally:
-        if local_file and os.path.exists(local_file):
-            try:
-                os.remove(local_file)
-            except Exception:
-                pass
-
-# ----------------- BROADCAST & MAINTENANCE ENGINES ----------------- #
-
-def broadcast_maintenance_notice(admin_chat_id: int) -> None:
-    notice_text = (
-        "⚠️ Notice: The bot is currently undergoing system security updates and maintenance. "
-        "It is temporarily unavailable. Please try again later!"
+    welcome_text = (
+        f"👋 <b>Welcome, {escape(user.first_name)}!</b>\n\n"
+        f"🌟 <b>7G Ultimate Master Bot</b> এ আপনাকে স্বাগতম!\n\n"
+        f"<b>🚀 প্রধান ফিচারসমূহ:</b>\n"
+        f"├ 🧠 <b>Google Gemini 1.5 Flash:</b> যেকোনো প্রশ্ন করুন বা <code>/ai আপনার প্রশ্ন</code> লিখুন।\n"
+        f"├ 🎨 <b>AI Image Generator:</b> <code>/image আপনার প্রম্পট</code> লিখে ছবি তৈরি করুন।\n"
+        f"├ 📥 <b>Instagram Downloader:</b> যেকোনো Reel বা Post লিংক পাঠালে সরাসরি ভিডিও ডাউনলোড হবে।\n"
+        f"├ 🎵 <b>TikTok Downloader:</b> ওয়াটারমার্ক ছাড়া HD ভিডিও ডাউনলোড।\n"
+        f"└ 🤖 <b>Create Own Bot:</b> আপনার নিজের বটের টোকেন দিয়ে ক্লোন তৈরি করুন!\n\n"
+        f"💡 <i>যেকোনো প্রশ্ন লিখে পাঠিয়ে দিন অথবা নিচের বাটন চাপুন:</i>"
     )
-    users_db = load_data(USER_FILE)
-    if not isinstance(users_db, dict):
+    safe_reply(bot, message, welcome_text, reply_markup=make_start_keyboard())
+
+@bot.message_handler(commands=["help"])
+def handle_help(message: types.Message):
+    user = message.from_user
+    if is_banned(user.id):
+        return
+    track_user_activity(user, "Command: /help", message.text)
+    help_text = (
+        "📖 <b>7G Master Bot - নির্দেশিকা</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔹 <code>/ai &lt;প্রশ্ন&gt;</code> - Google Gemini 1.5 Flash এর সাথে সরাসরি কথা বলুন।\n"
+        "🔹 <code>/image &lt;প্রম্পট&gt;</code> - Pollinations AI দিয়ে চমৎকার ছবি তৈরি করুন।\n"
+        "🔹 <b>Instagram Link</b> - ইনস্টাগ্রাম রিল বা ভিডিওর লিংক পেস্ট করুন।\n"
+        "🔹 <b>TikTok Link</b> - টিকটক লিংক পাঠালেই No-Watermark ভিডিও পাবেন।\n"
+        "🔹 <code>/clone</code> - আপনার নিজের বটের টোকেন যুক্ত করে ক্লোন চালান।\n"
+        "🔹 <code>/start</code> - মূল মেন্যু খুলুন।\n"
+        "━━━━━━━━━━━━━━━━━━━━━"
+    )
+    safe_reply(bot, message, help_text)
+
+# ----------------- AI TEXT CHAT (/ai & GENERAL TEXT) ----------------- #
+
+@bot.message_handler(commands=["ai"])
+def handle_ai_command(message: types.Message):
+    user = message.from_user
+    if is_banned(user.id):
+        return
+    if is_maintenance_active() and user.id != ADMIN_ID:
+        safe_reply(bot, message, "🛠️ Bot is in maintenance mode. Please wait.")
         return
 
-    sent = 0
-    failed = 0
-    for uid in users_db.keys():
-        if str(uid) == str(ADMIN_ID):
-            continue
-        try:
-            bot.send_message(uid, notice_text)
-            sent += 1
-            time.sleep(0.05)
-        except Exception:
-            failed += 1
-
-    try:
-        report = (
-            f"📢 <b>Maintenance Broadcast Completed!</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🟢 <b>Delivered to:</b> <code>{sent}</code> users\n"
-            f"🔴 <b>Failed/Blocked:</b> <code>{failed}</code> users\n"
-            f"━━━━━━━━━━━━━━━━━━━━━"
-        )
-        bot.send_message(admin_chat_id, report, parse_mode="HTML")
-    except Exception as e:
-        log_error("Failed to deliver broadcast summary to admin: %s", e)
-
-def execute_broadcast(admin_chat_id: int, content: str) -> None:
-    users_db = load_data(USER_FILE)
-    if not isinstance(users_db, dict):
+    prompt = message.text.replace("/ai", "", 1).strip()
+    if not prompt:
+        safe_reply(bot, message, "💡 <b>অনুগ্রহ করে আপনার প্রশ্নটি লিখুন।</b>\nযেমন: <code>/ai কোডিং শেখার সেরা উপায় কি?</code>")
         return
 
-    formatted_msg = f"📢 <b>Admin Announcement:</b>\n\n{escape(content)}"
-    sent = 0
-    failed = 0
+    track_user_activity(user, "Gemini AI Query (/ai)", prompt)
+    process_gemini_query(bot, message, prompt)
 
-    for uid in users_db.keys():
-        try:
-            bot.send_message(uid, formatted_msg, parse_mode="HTML")
-            sent += 1
-            time.sleep(0.05)
-        except Exception:
-            failed += 1
+@bot.message_handler(commands=["image"])
+def handle_image_command(message: types.Message):
+    user = message.from_user
+    if is_banned(user.id):
+        return
+    if is_maintenance_active() and user.id != ADMIN_ID:
+        safe_reply(bot, message, "🛠️ Bot is in maintenance mode. Please wait.")
+        return
 
+    prompt = message.text.replace("/image", "", 1).strip()
+    if not prompt:
+        safe_reply(bot, message, "🎨 <b>অনুগ্রহ করে ছবির বিবরণ (prompt) লিখুন।</b>\nযেমন: <code>/image a futuristic cybernetic tiger in neon dhaka city</code>")
+        return
+
+    track_user_activity(user, "Image Generation (/image)", prompt)
+    process_image_generation(bot, message, prompt)
+
+def process_gemini_query(bot_instance: telebot.TeleBot, message: types.Message, prompt: str):
+    """Handles Gemini response with interactive 'Thinking...' status and chunking."""
+    status_msg = None
     try:
-        summary = (
-            f"✅ <b>Broadcast Finished!</b>\n"
+        status_msg = bot_instance.reply_to(message, "💭 <i>Thinking with Google Gemini 1.5 Flash...</i>", parse_mode="HTML")
+    except Exception:
+        pass
+
+    def worker():
+        response_text = call_gemini_ai(prompt, user_name=message.from_user.first_name)
+        
+        # Remove thinking indicator
+        if status_msg:
+            try:
+                bot_instance.delete_message(message.chat.id, status_msg.message_id)
+            except Exception:
+                pass
+
+        # Send response cleanly with chunking for large outputs
+        chunk_and_send(bot_instance, message.chat.id, response_text, parse_mode="HTML")
+
+    EXECUTOR.submit(worker)
+
+def process_image_generation(bot_instance: telebot.TeleBot, message: types.Message, prompt: str):
+    """Generates image via Pollinations AI and sends photo."""
+    status_msg = None
+    try:
+        status_msg = bot_instance.reply_to(message, "🎨 <i>Generating your high-resolution image with Pollinations AI...</i>", parse_mode="HTML")
+    except Exception:
+        pass
+
+    def worker():
+        img_url, img_bytes = generate_pollinations_image(prompt)
+        
+        if status_msg:
+            try:
+                bot_instance.delete_message(message.chat.id, status_msg.message_id)
+            except Exception:
+                pass
+
+        caption = f"🎨 <b>Prompt:</b> {escape(prompt[:200])}\n✨ <i>Generated by 7G Master AI (Pollinations)</i>"
+
+        # If byte buffer available, send as photo stream (most reliable)
+        if img_bytes:
+            try:
+                photo_file = io.BytesIO(img_bytes)
+                photo_file.name = "ai_image.jpg"
+                bot_instance.send_photo(message.chat.id, photo_file, caption=caption, parse_mode="HTML")
+                return
+            except Exception as pe:
+                log_error("Sending photo bytes failed: %s. Falling back to URL...", pe)
+
+        # Fallback to direct URL
+        if img_url:
+            try:
+                bot_instance.send_photo(message.chat.id, img_url, caption=caption, parse_mode="HTML")
+                return
+            except Exception as ue:
+                log_error("Sending photo URL failed: %s", ue)
+
+        safe_reply(bot_instance, message, "⚠️ দুঃখিত, ছবিটি তৈরি করা সম্ভব হয়নি। অনুগ্রহ করে প্রম্পট পরিবর্তন করে আবার চেষ্টা করুন।")
+
+    EXECUTOR.submit(worker)
+
+# ----------------- ADMIN COMMANDS ----------------- #
+
+@bot.message_handler(commands=["stats"])
+def handle_stats(message: types.Message):
+    user = message.from_user
+    if user.id != ADMIN_ID:
+        return
+    users_db = load_data(USER_FILE)
+    total_users = len(users_db) if isinstance(users_db, dict) else 0
+    total_downloads = sum(u.get("downloads_count", 0) for u in users_db.values()) if isinstance(users_db, dict) else 0
+    total_messages = sum(u.get("msg_count", 0) for u in users_db.values()) if isinstance(users_db, dict) else 0
+    banned = len(load_data(BANNED_FILE))
+    config = get_config()
+
+    stats_text = (
+        "📊 <b>7G Master Bot - Admin Statistics</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 <b>Total Users:</b> <code>{total_users}</code>\n"
+        f"💬 <b>Total Messages Processed:</b> <code>{total_messages}</code>\n"
+        f"📥 <b>Total Media Downloads:</b> <code>{total_downloads}</code>\n"
+        f"🚫 <b>Banned Users:</b> <code>{banned}</code>\n"
+        f"🤖 <b>Active Clone Bots:</b> <code>{len(ACTIVE_CLONES)}</code>\n"
+        f"🛠️ <b>Maintenance Mode:</b> <code>{'ENABLED ⚠️' if config.get('maintenance') else 'DISABLED ✅'}</code>\n"
+        f"🧠 <b>AI Engine:</b> <code>Google Gemini 1.5 Flash</code>\n"
+        f"🎨 <b>Image Engine:</b> <code>Pollinations AI</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━"
+    )
+    safe_reply(bot, message, stats_text)
+
+@bot.message_handler(commands=["users"])
+def handle_users_list(message: types.Message):
+    user = message.from_user
+    if user.id != ADMIN_ID:
+        return
+    users_db = load_data(USER_FILE)
+    if not users_db:
+        safe_reply(bot, message, "No users registered yet.")
+        return
+
+    lines = ["👥 <b>Registered Users List:</b>\n━━━━━━━━━━━━━━━━━━━━━"]
+    for idx, (uid, uinfo) in enumerate(list(users_db.items())[-50:], start=1):
+        lines.append(
+            f"{idx}. <b>{escape(uinfo.get('first_name'))}</b> ({escape(uinfo.get('username'))}) - "
+            f"<code>{uid}</code> | Msgs: {uinfo.get('msg_count', 0)} | DLs: {uinfo.get('downloads_count', 0)}"
+        )
+    chunk_and_send(bot, message.chat.id, "\n".join(lines))
+
+@bot.message_handler(commands=["userinfo"])
+def handle_userinfo(message: types.Message):
+    user = message.from_user
+    if user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        safe_reply(bot, message, "Usage: <code>/userinfo &lt;user_id&gt;</code>")
+        return
+    target_id = parts[1].strip()
+    users_db = load_data(USER_FILE)
+    if target_id not in users_db:
+        safe_reply(bot, message, f"User <code>{target_id}</code> not found in database.")
+        return
+
+    info = users_db[target_id]
+    recent_msgs = info.get("messages", [])[-5:]
+    recent_dls = info.get("download_links", [])[-5:]
+
+    msgs_formatted = "\n".join([f"• <i>{escape(m[:60])}</i>" for m in recent_msgs]) or "None"
+    dls_formatted = "\n".join([f"• <code>{escape(l[:60])}</code>" for l in recent_dls]) or "None"
+
+    info_text = (
+        f"👤 <b>Detailed Inspection for User:</b> <code>{target_id}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📛 <b>Name:</b> {escape(info.get('first_name'))}\n"
+        f"🔗 <b>Username:</b> {escape(info.get('username'))}\n"
+        f"🌐 <b>Language:</b> <code>{escape(info.get('language_code'))}</code>\n"
+        f"📅 <b>First Seen:</b> <code>{info.get('first_seen')}</code>\n"
+        f"🕒 <b>Last Seen:</b> <code>{info.get('last_seen')}</code>\n"
+        f"💬 <b>Message Count:</b> <code>{info.get('msg_count', 0)}</code>\n"
+        f"📥 <b>Downloads:</b> <code>{info.get('downloads_count', 0)}</code>\n"
+        f"🎁 <b>Points:</b> <code>{info.get('points', 0)}</code>\n"
+        f"👥 <b>Referrals:</b> <code>{len(info.get('referrals', []))}</code>\n\n"
+        f"💬 <b>Recent Messages:</b>\n{msgs_formatted}\n\n"
+        f"📥 <b>Recent Download Links:</b>\n{dls_formatted}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━"
+    )
+    safe_reply(bot, message, info_text)
+
+@bot.message_handler(commands=["ban"])
+def handle_ban(message: types.Message):
+    user = message.from_user
+    if user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        safe_reply(bot, message, "Usage: <code>/ban &lt;user_id&gt;</code>")
+        return
+    target_id = parts[1].strip()
+    with FILE_LOCK:
+        banned = load_data(BANNED_FILE)
+        if not isinstance(banned, list):
+            banned = []
+        if target_id not in [str(u) for u in banned]:
+            banned.append(target_id)
+            save_data(BANNED_FILE, banned, trigger_backup=False)
+
+    safe_reply(bot, message, f"✅ User <code>{target_id}</code> has been banned successfully.")
+    try:
+        bot.send_message(
+            int(target_id),
+            "⛔ <b>Notification:</b> You have been banned by the Administrator from using 7G Master Bot.",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+@bot.message_handler(commands=["unban"])
+def handle_unban(message: types.Message):
+    user = message.from_user
+    if user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        safe_reply(bot, message, "Usage: <code>/unban &lt;user_id&gt;</code>")
+        return
+    target_id = parts[1].strip()
+    with FILE_LOCK:
+        banned = load_data(BANNED_FILE)
+        if isinstance(banned, list):
+            banned = [str(u) for u in banned if str(u) != target_id]
+            save_data(BANNED_FILE, banned, trigger_backup=False)
+
+    safe_reply(bot, message, f"✅ User <code>{target_id}</code> has been unbanned.")
+    try:
+        bot.send_message(
+            int(target_id),
+            "✅ <b>Notification:</b> Your account restriction has been lifted by the Administrator. You can use the bot again!",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+@bot.message_handler(commands=["maintenance"])
+def handle_maintenance(message: types.Message):
+    user = message.from_user
+    if user.id != ADMIN_ID:
+        return
+    config = get_config()
+    new_state = not config.get("maintenance", False)
+    config["maintenance"] = new_state
+    save_data(CONFIG_FILE, config, trigger_backup=False)
+
+    state_str = "ENABLED 🔴" if new_state else "DISABLED 🟢"
+    safe_reply(bot, message, f"🛠️ Maintenance mode is now <b>{state_str}</b>.")
+
+    # Auto Broadcast to all registered users
+    users_db = load_data(USER_FILE)
+    if isinstance(users_db, dict) and users_db:
+        broadcast_msg = (
+            "🛠️ <b>System Notice:</b> Bot is currently entering scheduled maintenance. Features may be temporarily unavailable."
+            if new_state
+            else "🟢 <b>System Notice:</b> Scheduled maintenance has concluded! All 7G Master Bot features are fully active."
+        )
+        def broadcast_worker():
+            for uid in list(users_db.keys()):
+                try:
+                    bot.send_message(int(uid), broadcast_msg, parse_mode="HTML")
+                    time.sleep(0.05)
+                except Exception:
+                    pass
+        EXECUTOR.submit(broadcast_worker)
+
+@bot.message_handler(commands=["broadcast"])
+def handle_broadcast(message: types.Message):
+    user = message.from_user
+    if user.id != ADMIN_ID:
+        return
+    broadcast_text = message.text.replace("/broadcast", "", 1).strip()
+    if not broadcast_text:
+        safe_reply(bot, message, "Usage: <code>/broadcast &lt;your message&gt;</code>")
+        return
+
+    users_db = load_data(USER_FILE)
+    if not isinstance(users_db, dict) or not users_db:
+        safe_reply(bot, message, "No registered users to broadcast to.")
+        return
+
+    status_msg = safe_reply(bot, message, f"📢 Starting broadcast to {len(users_db)} users...")
+
+    def broadcast_job():
+        success = 0
+        failed = 0
+        formatted_announcement = (
+            f"📢 <b>Global Announcement:</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🟢 <b>Sent Successfully:</b> <code>{sent}</code>\n"
-            f"🔴 <b>Failed:</b> <code>{failed}</code>\n"
+            f"{escape(broadcast_text)}\n"
             f"━━━━━━━━━━━━━━━━━━━━━"
         )
-        bot.send_message(admin_chat_id, summary, parse_mode="HTML")
-    except Exception as e:
-        log_error("Failed to send broadcast summary: %s", e)
+        for uid in list(users_db.keys()):
+            try:
+                bot.send_message(int(uid), formatted_announcement, parse_mode="HTML")
+                success += 1
+                time.sleep(0.05)
+            except Exception:
+                failed += 1
 
-# ----------------- 'CREATE OWN BOT' MULTI-BOT SYSTEM ----------------- #
-
-def launch_user_clone_bot(message: telebot.types.Message, token: str):
-    """Verifies user token, launches clone thread, and persists to clones_db.json."""
-    try:
-        test_bot = telebot.TeleBot(token, parse_mode=None)
-        me = test_bot.get_me()
-        bot_username = me.username
-        bot_id = str(me.id)
-
-        # Ensure no webhook conflict on child bot
         try:
-            test_bot.delete_webhook(drop_pending_updates=True)
+            bot.edit_message_text(
+                f"✅ <b>Broadcast Completed!</b>\nDelivered: <code>{success}</code>\nFailed: <code>{failed}</code>",
+                message.chat.id,
+                status_msg.message_id,
+                parse_mode="HTML"
+            )
         except Exception:
             pass
 
-        # Register clone handlers (WITH is_clone=True so child bot cannot clone further!)
-        register_bot_handlers(test_bot, is_clone=True)
+    EXECUTOR.submit(broadcast_job)
 
-        # Store in clones database
-        with FILE_LOCK:
-            clones_db = load_data(CLONES_FILE)
-            if not isinstance(clones_db, dict):
-                clones_db = {}
-            clones_db[bot_id] = {
-                "token": token,
-                "username": bot_username,
-                "owner_id": message.chat.id,
-                "owner_name": message.from_user.first_name,
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-            save_data(CLONES_FILE, clones_db, trigger_backup=False)
+# ----------------- CLONE BOT SYSTEM ----------------- #
 
-        # Start child bot polling thread
-        ACTIVE_CLONES[bot_id] = test_bot
-        t = threading.Thread(target=run_clone_polling, args=(test_bot, bot_username), daemon=True)
-        t.start()
+@bot.message_handler(commands=["clone"])
+def handle_clone_command(message: types.Message):
+    user = message.from_user
+    if is_banned(user.id):
+        return
+    AWAITING_BOT_TOKEN.add(user.id)
+    safe_reply(
+        bot,
+        message,
+        "🤖 <b>Create Your Own Clone Bot!</b>\n\n"
+        "1. Open @BotFather on Telegram.\n"
+        "2. Create a new bot with <code>/newbot</code>.\n"
+        "3. Copy the HTTP API Token and send it here now.\n\n"
+        "<i>Send /cancel to abort.</i>"
+    )
 
-        success_msg = (
-            f"🎉 <b>CONGRATULATIONS! YOUR BOT IS NOW LIVE!</b> 🚀\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🤖 <b>Bot Username:</b> @{bot_username}\n"
-            f"🆔 <b>Bot ID:</b> <code>{bot_id}</code>\n"
-            f"⚡ <b>Status:</b> 100% Online & Hosted 24/7!\n\n"
-            f"👉 <b>Open your bot now:</b> https://t.me/{bot_username}\n"
-            f"<i>Your bot has Instagram, TikTok HD & AI features active right now!</i>"
-        )
-        safe_reply(bot, message, success_msg, parse_mode="HTML")
-
-        # Alert Master Admin
-        bot.send_message(
-            ADMIN_ID,
-            f"🤖 <b>New Bot Cloned!</b>\nOwner: <code>{message.chat.id}</code> ({message.from_user.first_name})\nBot: @{bot_username}",
-            parse_mode="HTML"
-        )
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callbacks(call: types.CallbackQuery):
+    try:
+        if call.data == "clone_bot":
+            AWAITING_BOT_TOKEN.add(call.from_user.id)
+            bot.send_message(
+                call.message.chat.id,
+                "🤖 <b>Create Your Own Bot:</b>\nSend your Telegram Bot Token from @BotFather now:",
+                parse_mode="HTML"
+            )
+            bot.answer_callback_query(call.id)
+        elif call.data == "my_stats":
+            users_db = load_data(USER_FILE)
+            uid = str(call.from_user.id)
+            info = users_db.get(uid, {})
+            stats_msg = (
+                f"👤 <b>Your Activity Profile:</b>\n"
+                f"├ 💬 Messages Sent: <code>{info.get('msg_count', 0)}</code>\n"
+                f"├ 📥 Downloads: <code>{info.get('downloads_count', 0)}</code>\n"
+                f"├ 🎁 Referral Points: <code>{info.get('points', 0)}</code>\n"
+                f"└ 👥 Friends Invited: <code>{len(info.get('referrals', []))}</code>"
+            )
+            bot.send_message(call.message.chat.id, stats_msg, parse_mode="HTML")
+            bot.answer_callback_query(call.id)
     except Exception as e:
-        log_error(f"Failed to clone bot with token {token[:10]}: {e}")
-        safe_reply(
-            bot,
-            message,
-            f"❌ <b>Failed to launch bot:</b> Invalid token or Telegram refused connection.\n<i>Details: {escape(str(e))}</i>",
-            parse_mode="HTML"
-        )
+        log_error(f"Callback error: {e}")
 
-def run_clone_polling(clone_bot: telebot.TeleBot, username: str):
-    log(f"Cloned bot @{username} polling initialized.")
-    while True:
-        try:
-            clone_bot.infinity_polling(timeout=30, long_polling_timeout=20, skip_pending=True)
-        except Exception as err:
-            log_error(f"Cloned bot @{username} polling error: {err}. Reconnecting in 10s...")
-            time.sleep(10)
+def start_clone_bot(token: str, owner_id: int):
+    """Spins up an independent TeleBot polling thread with Gemini AI and Pollinations."""
+    try:
+        clean_token = token.strip()
+        clone = telebot.TeleBot(clean_token, parse_mode=None)
+        me = clone.get_me()
+        log(f"Starting Clone Bot @{me.username} for owner {owner_id}")
 
-def restore_saved_clones():
-    """Restores all previously created clone bots upon master bot restart."""
-    clones_db = load_data(CLONES_FILE)
-    if isinstance(clones_db, dict) and clones_db:
-        log(f"Restoring {len(clones_db)} active cloned bots from database...")
-        for bot_id, item in clones_db.items():
-            token = item.get("token")
-            username = item.get("username", "UnknownBot")
-            if token:
+        @clone.message_handler(commands=["start"])
+        def clone_start(msg):
+            clone.reply_to(msg, f"👋 Hello {msg.from_user.first_name}! I am a 7G Clone Bot powered by Gemini 1.5 Flash.")
+
+        @clone.message_handler(commands=["ai"])
+        def clone_ai(msg):
+            q = msg.text.replace("/ai", "", 1).strip()
+            if q:
+                res = call_gemini_ai(q, user_name=msg.from_user.first_name)
+                chunk_and_send(clone, msg.chat.id, res)
+
+        @clone.message_handler(commands=["image"])
+        def clone_image(msg):
+            p = msg.text.replace("/image", "", 1).strip()
+            if p:
+                img_url, img_bytes = generate_pollinations_image(p)
+                if img_bytes:
+                    f = io.BytesIO(img_bytes)
+                    f.name = "image.jpg"
+                    clone.send_photo(msg.chat.id, f)
+                elif img_url:
+                    clone.send_photo(msg.chat.id, img_url)
+
+        ACTIVE_CLONES[clean_token] = clone
+        clone.infinity_polling(skip_pending=True)
+    except Exception as e:
+        log_error(f"Clone bot execution failed: {e}")
+
+# ----------------- UNIVERSAL MESSAGE & DOWNLOAD LISTENER ----------------- #
+
+@bot.message_handler(func=lambda m: True, content_types=["text"])
+def handle_all_text_messages(message: types.Message):
+    user = message.from_user
+    text = (message.text or "").strip()
+
+    if is_banned(user.id):
+        return
+
+    # Check awaiting bot token state
+    if user.id in AWAITING_BOT_TOKEN:
+        AWAITING_BOT_TOKEN.remove(user.id)
+        if text.lower() == "/cancel":
+            safe_reply(bot, message, "❌ Operation cancelled.")
+            return
+        if ":" in text and len(text) > 30:
+            status = safe_reply(bot, message, "⏳ Validating bot token and launching clone...")
+            try:
+                test_bot = telebot.TeleBot(text)
+                bot_info = test_bot.get_me()
+                EXECUTOR.submit(start_clone_bot, text, user.id)
+                safe_reply(bot, message, f"🎉 <b>Success!</b> Your bot @{bot_info.username} is now online and active 24/7!")
+            except Exception as e:
+                safe_reply(bot, message, f"❌ Failed to start bot: Invalid token or Telegram API error ({escape(str(e))}).")
+            return
+        else:
+            safe_reply(bot, message, "❌ Invalid bot token format. Please try /clone again.")
+            return
+
+    # Maintenance check
+    if is_maintenance_active() and user.id != ADMIN_ID:
+        safe_reply(bot, message, "🛠️ Bot is currently undergoing maintenance. Please check back shortly!")
+        return
+
+    # 1. Instagram Link Handler
+    if "instagram.com" in text:
+        track_user_activity(user, "Instagram Download", text)
+        status_msg = safe_reply(bot, message, "⏳ <b>Processing Instagram HD download...</b>")
+
+        def ig_job():
+            candidate = download_instagram(text)
+            if status_msg:
                 try:
-                    clone_bot = telebot.TeleBot(token, parse_mode=None)
-                    try:
-                        clone_bot.delete_webhook(drop_pending_updates=True)
-                    except Exception:
-                        pass
-                    register_bot_handlers(clone_bot, is_clone=True)
-                    ACTIVE_CLONES[bot_id] = clone_bot
-                    t = threading.Thread(target=run_clone_polling, args=(clone_bot, username), daemon=True)
-                    t.start()
-                    log(f"Restored clone bot @{username} successfully.")
-                except Exception as restore_err:
-                    log_error(f"Failed to restore clone bot {bot_id}: {restore_err}")
+                    bot.delete_message(message.chat.id, status_msg.message_id)
+                except Exception:
+                    pass
 
-# ----------------- MAIN INITIALIZATION ----------------- #
-if __name__ == "__main__":
-    print("=" * 65, flush=True)
-    print("🚀 7G Ultimate Master Bot is launching...", flush=True)
-    print(f"🤖 Primary Bot Token: {MAIN_BOT_TOKEN[:10]}...{MAIN_BOT_TOKEN[-6:]}", flush=True)
-    print(f"👑 Master Admin ID: {ADMIN_ID}", flush=True)
-    print("=" * 65, flush=True)
+            if candidate:
+                try:
+                    if os.path.exists(candidate):
+                        with open(candidate, "rb") as vf:
+                            bot.send_video(message.chat.id, vf, caption="📥 <b>Downloaded via 7G Master Bot</b> ✨", parse_mode="HTML")
+                        try:
+                            os.remove(candidate)
+                        except Exception:
+                            pass
+                    else:
+                        bot.send_video(message.chat.id, candidate, caption="📥 <b>Downloaded via 7G Master Bot</b> ✨", parse_mode="HTML")
+                    return
+                except Exception as send_err:
+                    log_error(f"Sending Instagram media failed: {send_err}")
+            safe_reply(bot, message, "⚠️ দুঃখিত, এই ইনস্টাগ্রাম রিল/পোস্টটি ডাউনলোড করা সম্ভব হয়নি। লিঙ্কটি প্রাইভেট বা আনসাপোর্টেড হতে পারে।")
 
-    # 1. Register handlers for the Primary Master Bot (is_clone=False)
-    register_bot_handlers(bot, is_clone=False)
+        EXECUTOR.submit(ig_job)
+        return
 
-    # 2. Start Flask Keep-Alive Web Server on 0.0.0.0:PORT
-    flask_thread = threading.Thread(target=run_flask, daemon=True, name="FlaskServerThread")
+    # 2. TikTok Link Handler
+    if "tiktok.com" in text:
+        track_user_activity(user, "TikTok Download", text)
+        status_msg = safe_reply(bot, message, "⏳ <b>Processing TikTok HD download (No Watermark)...</b>")
+
+        def tt_job():
+            candidate = download_tiktok(text)
+            if status_msg:
+                try:
+                    bot.delete_message(message.chat.id, status_msg.message_id)
+                except Exception:
+                    pass
+
+            if candidate:
+                try:
+                    if os.path.exists(candidate):
+                        with open(candidate, "rb") as vf:
+                            bot.send_video(message.chat.id, vf, caption="📥 <b>TikTok HD (No Watermark) via 7G Master Bot</b> ✨", parse_mode="HTML")
+                        try:
+                            os.remove(candidate)
+                        except Exception:
+                            pass
+                    else:
+                        bot.send_video(message.chat.id, candidate, caption="📥 <b>TikTok HD (No Watermark) via 7G Master Bot</b> ✨", parse_mode="HTML")
+                    return
+                except Exception as send_err:
+                    log_error(f"Sending TikTok media failed: {send_err}")
+            safe_reply(bot, message, "⚠️ দুঃখিত, এই টিকটক ভিডিওটি ডাউনলোড করা সম্ভব হয়নি। অনুগ্রহ করে লিঙ্কটি পুনরায় পরীক্ষা করুন।")
+
+        EXECUTOR.submit(tt_job)
+        return
+
+    # 3. Default Natural Conversation with Google Gemini 1.5 Flash
+    track_user_activity(user, "Natural Chat (Gemini)", text)
+    process_gemini_query(bot, message, text)
+
+# ----------------- MAIN BOOTSTRAPPER ----------------- #
+
+def main():
+    log("=========================================================")
+    log("🚀 Starting 7G Ultimate Telegram Master Bot (Enterprise)")
+    log("=========================================================")
+    log(f"Admin ID: {ADMIN_ID}")
+    log(f"Gemini AI Engine: {'CONFIGURED ✅' if (os.getenv('GEMINI_API_KEY') or GEMINI_API_KEY) else 'MISSING ⚠️ (Set GEMINI_API_KEY)'}")
+    log(f"Pollinations Image Engine: READY ✅")
+
+    # Start Flask 24/7 Keep-Alive Server Thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True, name="FlaskThread")
     flask_thread.start()
-    time.sleep(1.5)
 
-    # 3. Start self-ping thread for Render free web service
+    # Start Render 24/7 Self-Ping Keep-Alive Thread
     ping_thread = threading.Thread(target=keep_alive_ping_loop, daemon=True, name="SelfPingThread")
     ping_thread.start()
 
-    # 4. Clean webhook and drop pending update backlog
-    try:
-        log("Clearing any webhook and pending updates for clean connection...")
-        bot.delete_webhook(drop_pending_updates=True)
-        time.sleep(1)
-        log("Webhook cleared successfully!")
-    except Exception as wh_err:
-        log_error(f"Webhook note: {wh_err}")
-
-    # 5. Authenticate Master Bot
-    try:
-        master_info = bot.get_me()
-        log(f"✅ Master Bot Authenticated: @{master_info.username} (ID: {master_info.id}, Name: {master_info.first_name})")
-    except Exception as auth_err:
-        log_error(f"❌ Failed to authenticate Master Bot with Telegram: {auth_err}")
-
-    # 6. Restore all cloned bots in background threads
-    EXECUTOR.submit(restore_saved_clones)
-
-    # 7. Start Primary Bot Infinity Polling with Resilience
-    log(">>> 7G MASTER BOT IS NOW FULLY ONLINE AND SERVING REQUESTS! <<<")
+    # Start TeleBot Polling with Automatic Reconnect Loop
+    log("Starting Telegram Bot long-polling...")
     while True:
         try:
-            bot.infinity_polling(timeout=30, long_polling_timeout=20, skip_pending=False)
-        except telebot.apihelper.ApiTelegramException as api_err:
-            if api_err.error_code == 409:
-                log_error(
-                    "⚠️ TELEGRAM CONFLICT (Error 409): Another instance is running with this token! "
-                    "Please stop the old bot instance on your PC or previous server. Retrying in 10s..."
-                )
-                time.sleep(10)
-            else:
-                log_error(f"Telegram API Exception: {api_err}. Retrying in 5s...")
-                time.sleep(5)
-        except Exception as error:
-            log_error(f"Bot polling error: {error}. Reconnecting in 5s...")
+            bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=30)
+        except Exception as poll_err:
+            log_error(f"Telegram polling exception: {poll_err}. Reconnecting in 5 seconds...")
             time.sleep(5)
+
+if __name__ == "__main__":
+    main()
