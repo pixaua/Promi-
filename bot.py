@@ -6,6 +6,27 @@ Primary Token: 7678905793:AAHzGB0W0RnYLRkLTkSkSJNTghHTUYFf2mQ
 Master Admin ID: 6162953772
 Meta AI API Key: nxt_3a454c41e6a84aeead28d1fb4aec87a4
 =============================================================================
+FEATURES INCLUDED:
+  1. Multi-Platform Media Downloader with Interactive Choice:
+     - 📸 Instagram Reels, Posts & Stories (With Guaranteed Audio)
+     - 🎵 TikTok HD (100% Watermark-Free + Audio Extractor)
+     - 🔴 YouTube Videos & Shorts (Bypass Cloud IP blocks + HD MP4/MP3)
+     - 🔵 Facebook Videos & Reels (HD Video + MP3 Audio)
+  2. Interactive Inline Keyboard:
+     - 🎬 Download Video (HD) vs 🎵 Download Audio (MP3)
+  3. Meta AI Assistant Chat (/ai or direct text) & AI Image Generator (/image)
+  4. Complete User Activity Tracking (Auto-registers on any link without /start)
+  5. Admin Database Backup & Restore Engine (/restoredb document reply)
+  6. Admin Dashboard (/stats & /users) with Serialized Messages & Downloaded Links
+  7. Detailed Single User Inspection (/userinfo <user_id>)
+  8. Ban & Unban System (/ban & /unban) with Instant Direct Notifications
+  9. Maintenance Mode Control (/maintenance) with Instant Auto-Broadcast on BOTH ON & OFF
+ 10. Admin Global Announcement Engine (/broadcast <message>)
+ 11. "Create Own Bot" Multi-Bot System (Clone any bot token live without sub-cloning)
+ 12. Master Admin Clone Management Panel (/clones, /stopbot, /startbot, /delbot)
+     with Instant Thread Termination (bypasses infinity_polling blocking)
+ 13. 24/7 Keep-Alive Flask Server & Self-Ping Loop for Render/Railway/VPS
+=============================================================================
 """
 
 from __future__ import annotations
@@ -41,6 +62,13 @@ from flask import Flask, jsonify
 import telebot
 from telebot import types
 import yt_dlp
+
+# Ensure static ffmpeg paths if installed (for Render / cloud environments)
+try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+except Exception:
+    pass
 
 # ----------------- LOGGING CONFIGURATION ----------------- #
 LOG = logging.getLogger("7g_master")
@@ -90,7 +118,7 @@ ACTIVE_CLONES: dict[str, telebot.TeleBot] = {}
 STOPPED_CLONES: set[str] = set()
 AWAITING_BOT_TOKEN: set[int] = set()
 
-# Pending Downloads Cache
+# Pending Downloads Cache (Maps short 8-char id to link & platform info)
 DOWNLOAD_CACHE: dict[str, dict[str, Any]] = {}
 CACHE_LOCK = threading.Lock()
 
@@ -127,6 +155,7 @@ def run_flask():
 
 # ----------------- RENDER 24/7 SELF-PING KEEP-ALIVE LOOP ----------------- #
 def keep_alive_ping_loop():
+    """Periodically pings the web service so Render free tier never spins down."""
     render_url = os.getenv("RENDER_EXTERNAL_URL", "").strip() or os.getenv("KEEP_ALIVE_URL", "").strip()
     if not render_url:
         log("Keep-alive self-ping: Waiting for RENDER_EXTERNAL_URL or live traffic.")
@@ -144,6 +173,7 @@ def keep_alive_ping_loop():
 
 # ----------------- DOWNLOAD CACHE HELPER ----------------- #
 def register_download_task(url: str, platform: str, user_id: int) -> str:
+    """Stores URL in cache with a short token and auto-prunes entries older than 6 hours."""
     with CACHE_LOCK:
         now = time.time()
         expired = [k for k, v in DOWNLOAD_CACHE.items() if now - v.get("timestamp", 0) > 21600]
@@ -276,6 +306,10 @@ def track_user_activity(
     text_data: str = "",
     referred_by: int | None = None
 ) -> None:
+    """
+    Seamless user activity tracker.
+    Automatically captures and registers old and new users without needing them to hit /start!
+    """
     try:
         user_id = str(user.id)
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -286,6 +320,7 @@ def track_user_activity(
                 users_db = {}
 
             if user_id not in users_db:
+                # Brand new or migrated user profile automatically initialized
                 users_db[user_id] = {
                     "first_name": user.first_name or "Unknown",
                     "username": f"@{user.username}" if user.username else "No Username",
@@ -379,6 +414,7 @@ def download_to_temp_file(
     suffix: str = ".mp4",
     referer: str = "https://www.google.com/"
 ) -> str | None:
+    """Downloads media to local temp file with browser headers to avoid Telegram 400 Bad Request error."""
     try:
         headers = {
             "User-Agent": USER_AGENT,
@@ -621,109 +657,224 @@ def download_tiktok(url: str, extract_audio: bool = False) -> tuple[str, str | N
 
 # ----------------- YOUTUBE DOWNLOADER (BYPASS CLOUD IP / BOT RESTRICTIONS) ----------------- #
 
+def extract_youtube_id(url: str) -> str | None:
+    """Extracts 11-character YouTube video ID from any format (shorts, youtu.be, watch?v=, embed, etc)."""
+    patterns = [
+        r"(?:v=|\/v\/|youtu\.be\/|\/embed\/|\/shorts\/|\/live\/)([a-zA-Z0-9_-]{11})",
+        r"^[a-zA-Z0-9_-]{11}$"
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, url)
+        if m:
+            return m.group(1)
+    return None
+
 def download_youtube(url: str, extract_audio: bool = False) -> tuple[str, str | None]:
     """
-    Multi-Tier YouTube Downloader:
-    Uses player client spoofing ('ios', 'android', 'mweb') to bypass YouTube cloud IP bot detection,
-    with additional fallback to web stream extractors.
+    Enterprise-Grade YouTube Downloader:
+    1. Normalizes YouTube links to canonical URLs (strips tracking query params like ?si=...).
+    2. Client player spoofing ('android', 'ios', 'mweb') to bypass YouTube datacenter bot detection.
+    3. NEVER filters DASH/HLS so all modern 1080p/720p/audio streams are discoverable.
+    4. Progressive stream fallback (formats 18, 22) that require ZERO ffmpeg merging.
+    5. Direct stream URL extraction fallback if file merging or saving is interrupted.
+    6. Multi-instance public resolver fallbacks (Invidious & Cobalt).
     """
     clean_url = url.strip()
+    video_id = extract_youtube_id(clean_url)
+    target_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else clean_url
+
     temp_dir = tempfile.gettempdir()
     prefix = f"yt_{uuid.uuid4().hex[:8]}"
+    default_title = "YouTube Media"
 
-    # Multiple client player profiles in order of highest success rate on Render/Datacenters
+    # Define client player profiles in order of highest success rate on cloud/datacenter IPs
     player_client_sets = [
-        ['ios', 'android'],
         ['android'],
-        ['mweb', 'web_safari'],
+        ['ios'],
+        ['android', 'ios'],
+        ['mweb'],
         ['web']
     ]
 
-    for client_list in player_client_sets:
-        out_tmpl = os.path.join(temp_dir, f"{prefix}_{client_list[0]}.%(ext)s")
-        try:
-            if extract_audio:
-                ydl_opts = {
-                    'format': 'bestaudio[ext=m4a]/bestaudio/best',
-                    'outtmpl': out_tmpl,
-                    'quiet': True,
-                    'no_warnings': True,
-                    'socket_timeout': 30,
-                    'nocheckcertificate': True,
-                    'extractor_args': {
-                        'youtube': {
-                            'player_client': client_list,
-                            'skip': ['hls', 'dash']
-                        }
-                    },
-                    'http_headers': {
-                        'User-Agent': USER_AGENT,
-                        'Accept-Language': 'en-US,en;q=0.9',
-                    },
-                    'max_filesize': 49 * 1024 * 1024,
-                }
-            else:
-                ydl_opts = {
-                    'format': 'best[ext=mp4][height<=1080][vcodec!=none][acodec!=none]/bestvideo[height<=720]+bestaudio/best[height<=720]/best',
-                    'outtmpl': out_tmpl,
-                    'quiet': True,
-                    'no_warnings': True,
-                    'socket_timeout': 30,
-                    'nocheckcertificate': True,
-                    'extractor_args': {
-                        'youtube': {
-                            'player_client': client_list,
-                            'skip': ['hls', 'dash']
-                        }
-                    },
-                    'http_headers': {
-                        'User-Agent': USER_AGENT,
-                        'Accept-Language': 'en-US,en;q=0.9',
-                    },
-                    'max_filesize': 49 * 1024 * 1024,
-                }
+    # Format selectors: Progressive formats (22=720p, 18=360p) need NO ffmpeg merging!
+    if extract_audio:
+        # Prioritize AAC m4a (native Telegram audio format) -> mp3 -> general bestaudio
+        format_spec = "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/140/best"
+    else:
+        # Prioritize progressive combined MP4, or merged 720p MP4
+        format_spec = (
+            "best[ext=mp4][height<=720][vcodec!=none][acodec!=none]/"
+            "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/"
+            "bestvideo[height<=720]+bestaudio/"
+            "22/18/"
+            "best[height<=720]/best"
+        )
 
+    # Strategy 1: yt-dlp direct download with mobile client spoofing (Innertube API)
+    for client_list in player_client_sets:
+        client_name = client_list[0] if client_list else "default"
+        out_tmpl = os.path.join(temp_dir, f"{prefix}_{client_name}.%(ext)s")
+
+        ydl_opts: dict[str, Any] = {
+            'format': format_spec,
+            'outtmpl': out_tmpl,
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 35,
+            'nocheckcertificate': True,
+            'http_headers': {
+                'User-Agent': USER_AGENT,
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
+            'max_filesize': 49 * 1024 * 1024,
+        }
+
+        if client_list:
+            ydl_opts['extractor_args'] = {
+                'youtube': {
+                    'player_client': client_list
+                }
+            }
+
+        try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(clean_url, download=True)
+                info = ydl.extract_info(target_url, download=True)
                 if info:
-                    title = info.get("title") or "YouTube Media"
+                    title = info.get("title") or default_title
                     candidate_path = ydl.prepare_filename(info)
                     if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 1000:
                         return title, candidate_path
+
+                    # Check temp directory for matching downloaded file
                     for f in os.listdir(temp_dir):
-                        if f.startswith(f"{prefix}_{client_list[0]}"):
+                        if f.startswith(f"{prefix}_{client_name}"):
                             f_path = os.path.join(temp_dir, f)
                             if os.path.getsize(f_path) > 1000:
                                 return title, f_path
-        except Exception as client_err:
-            log_error(f"YouTube attempt with {client_list} failed: {client_err}")
+        except Exception as dl_err:
+            log_error(f"yt-dlp download with {client_list} failed: {dl_err}")
             continue
 
-    # Fallback to public YouTube web resolver
-    try:
-        cobalt_payload = {
-            "url": clean_url,
-            "vQuality": "720",
-            "isAudioOnly": extract_audio
-        }
-        res = HTTP_SESSION.post(
-            "https://api.cobalt.tools/api/json",
-            json=cobalt_payload,
-            headers={"Accept": "application/json", "User-Agent": USER_AGENT},
-            timeout=15
-        )
-        if res.status_code == 200:
-            data = res.json()
-            stream_url = data.get("url")
-            if stream_url:
-                suffix = ".mp3" if extract_audio else ".mp4"
-                tmp_f = download_to_temp_file(stream_url, suffix=suffix, referer="https://cobalt.tools/")
-                if tmp_f:
-                    return "YouTube Media", tmp_f
-    except Exception as cobalt_err:
-        log_error(f"YouTube Cobalt fallback failed: {cobalt_err}")
+    # Strategy 2: yt-dlp metadata extraction -> Direct Google Video CDN stream download
+    for client_list in [['android'], ['ios']]:
+        try:
+            ydl_info_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'nocheckcertificate': True,
+                'extractor_args': {'youtube': {'player_client': client_list}},
+                'http_headers': {'User-Agent': USER_AGENT}
+            }
+            with yt_dlp.YoutubeDL(ydl_info_opts) as ydl:
+                info = ydl.extract_info(target_url, download=False)
+                if info:
+                    title = info.get("title") or default_title
+                    formats = info.get("formats", [])
+                    best_url = None
+                    file_ext = ".m4a" if extract_audio else ".mp4"
 
-    return "YouTube Media", None
+                    if extract_audio:
+                        for fmt in reversed(formats):
+                            fmt_url = fmt.get("url")
+                            vcodec = fmt.get("vcodec")
+                            acodec = fmt.get("acodec")
+                            filesize = fmt.get("filesize") or fmt.get("filesize_approx") or 0
+                            if fmt_url and (vcodec == "none" or not vcodec) and acodec != "none":
+                                if filesize == 0 or filesize < 49 * 1024 * 1024:
+                                    best_url = fmt_url
+                                    if fmt.get("ext") in ["m4a", "mp3"]:
+                                        file_ext = f".{fmt.get('ext')}"
+                                    break
+                    else:
+                        for fmt in reversed(formats):
+                            fmt_url = fmt.get("url")
+                            vcodec = fmt.get("vcodec")
+                            acodec = fmt.get("acodec")
+                            height = fmt.get("height") or 0
+                            filesize = fmt.get("filesize") or fmt.get("filesize_approx") or 0
+                            if fmt_url and vcodec and vcodec != "none" and acodec and acodec != "none":
+                                if height <= 720 and (filesize == 0 or filesize < 49 * 1024 * 1024):
+                                    best_url = fmt_url
+                                    file_ext = ".mp4"
+                                    break
+
+                    if best_url:
+                        tmp_file = download_to_temp_file(best_url, suffix=file_ext, referer="https://www.youtube.com/")
+                        if tmp_file and os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 1000:
+                            return title, tmp_file
+        except Exception as info_err:
+            log_error(f"yt-dlp stream extraction with {client_list} failed: {info_err}")
+            continue
+
+    # Strategy 3: Public Invidious API instance stream resolver (if video_id is known)
+    if video_id:
+        invidious_instances = [
+            "https://inv.tux.pizza",
+            "https://invidious.nerdvpn.de",
+            "https://invidious.jing.rocks",
+            "https://yt.artemislena.eu"
+        ]
+        for inv_host in invidious_instances:
+            try:
+                api_url = f"{inv_host}/api/v1/videos/{video_id}"
+                resp = HTTP_SESSION.get(api_url, timeout=12, headers={"User-Agent": USER_AGENT})
+                if resp.status_code == 200:
+                    data = resp.json()
+                    title = data.get("title") or default_title
+                    if extract_audio:
+                        audio_formats = data.get("adaptiveFormats", [])
+                        for af in audio_formats:
+                            if af.get("type", "").startswith("audio"):
+                                stream_url = af.get("url")
+                                if stream_url:
+                                    ext = ".m4a" if "mp4a" in af.get("type", "") else ".mp3"
+                                    tmp_f = download_to_temp_file(stream_url, suffix=ext, referer=inv_host)
+                                    if tmp_f and os.path.exists(tmp_f):
+                                        return title, tmp_f
+                    else:
+                        format_streams = data.get("formatStreams", [])
+                        for fs in reversed(format_streams):
+                            stream_url = fs.get("url")
+                            if stream_url:
+                                tmp_f = download_to_temp_file(stream_url, suffix=".mp4", referer=inv_host)
+                                if tmp_f and os.path.exists(tmp_f):
+                                    return title, tmp_f
+            except Exception as inv_err:
+                log_error(f"Invidious instance {inv_host} failed: {inv_err}")
+                continue
+
+    # Strategy 4: Cobalt API public instances
+    cobalt_instances = [
+        "https://api.cobalt.tools/api/json",
+        "https://cobalt-api.kwiatekm.tokyo/api/json",
+        "https://co.wuk.sh/api/json"
+    ]
+    for cob_url in cobalt_instances:
+        try:
+            payload = {
+                "url": target_url,
+                "vQuality": "720",
+                "isAudioOnly": extract_audio
+            }
+            res = HTTP_SESSION.post(
+                cob_url,
+                json=payload,
+                headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+                timeout=15
+            )
+            if res.status_code == 200:
+                data = res.json()
+                stream_url = data.get("url")
+                if stream_url:
+                    suffix = ".mp3" if extract_audio else ".mp4"
+                    tmp_f = download_to_temp_file(stream_url, suffix=suffix, referer="https://cobalt.tools/")
+                    if tmp_f and os.path.exists(tmp_f):
+                        return default_title, tmp_f
+        except Exception as cob_err:
+            log_error(f"Cobalt endpoint {cob_url} failed: {cob_err}")
+            continue
+
+    return default_title, None
 
 # ----------------- FACEBOOK DOWNLOADER (VIDEOS & REELS) ----------------- #
 
@@ -895,6 +1046,7 @@ def prompt_media_choice(
     url: str,
     platform: str
 ) -> None:
+    """Sends an inline keyboard asking user to choose Video (HD) or Audio (MP3)."""
     short_id = register_download_task(url, platform, message.chat.id)
 
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -927,7 +1079,7 @@ def process_download_execution(
     chat_id: int,
     status_msg_id: int,
     short_id: str,
-    format_type: str
+    format_type: str  # "v" or "a"
 ) -> None:
     task = get_download_task(short_id)
     if not task:
@@ -1095,7 +1247,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
                 )
             return
 
-        # Admin Clone Bot Actions
+        # Admin Clone Bot Actions: clone:stop:<bot_id>, clone:start:<bot_id>, clone:del:<bot_id>
         if data.startswith("clone:"):
             if call.from_user.id != ADMIN_ID:
                 try:
@@ -1118,7 +1270,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
                         pass
 
                 elif action == "start":
-                    start_cloned_bot(target_bot_id)
+                    res = start_cloned_bot(target_bot_id)
                     try:
                         bot_instance.answer_callback_query(call.id, text=f"▶️ Bot ID {target_bot_id} resumed!")
                         safe_reply(bot_instance, call.message, f"▶️ <b>Cloned Bot <code>{target_bot_id}</code> is resumed and polling active.</b>", parse_mode="HTML")
@@ -1170,6 +1322,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
         keyboard.row(btn_stats, btn_refer)
         keyboard.row(btn_create)
 
+        # Ultra-Professional Welcome Message without "Welcome to 7G Bot Master"
         welcome_text = (
             "⚡ <b>All-in-One Multi-Media Downloader & AI Assistant</b> ✨\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1257,7 +1410,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
         )
         safe_reply(bot_instance, message, dashboard, parse_mode="HTML")
 
-    # /clones handler (ADMIN ONLY)
+    # /clones handler (ADMIN ONLY) - Manage Cloned Bots
     @bot_instance.message_handler(commands=['clones', 'managebots'])
     def handle_clones_admin(message: telebot.types.Message):
         if message.chat.id != ADMIN_ID:
@@ -1348,7 +1501,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
         delete_cloned_bot(target_id)
         safe_reply(bot_instance, message, f"🗑️ <b>Cloned Bot <code>{target_id}</code> removed permanently from database and stopped.</b>", parse_mode="HTML")
 
-    # /restoredb handler (ADMIN ONLY)
+    # /restoredb handler (ADMIN ONLY) - Restore DB from Telegram document reply
     @bot_instance.message_handler(commands=['restoredb', 'restoreusers'])
     def handle_restore_db(message: telebot.types.Message):
         if message.chat.id != ADMIN_ID:
@@ -1375,8 +1528,10 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             content = json.loads(downloaded.decode("utf-8"))
 
             if isinstance(content, dict):
+                # Detect whether it is users or clones
                 first_val = next(iter(content.values()), {})
                 if isinstance(first_val, dict) and "first_seen" in first_val:
+                    # It's users_db.json
                     with FILE_LOCK:
                         existing = load_data(USER_FILE)
                         if isinstance(existing, dict):
@@ -1386,6 +1541,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
                             save_data(USER_FILE, content)
                     safe_reply(bot_instance, message, f"✅ <b>Successfully restored {len(content)} users into database!</b>", parse_mode="HTML")
                 elif isinstance(first_val, dict) and "token" in first_val:
+                    # It's clones_db.json
                     with FILE_LOCK:
                         save_data(CLONES_FILE, content)
                     restore_saved_clones()
@@ -1464,6 +1620,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
         referred_by = info.get("referred_by") or "None (Direct)"
         referrals = info.get("referrals", [])
 
+        # Serialized Messages List
         messages_list = info.get("messages", [])
         if messages_list:
             serialized_msgs = "\n".join(
@@ -1472,6 +1629,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
         else:
             serialized_msgs = "  <i>(No text messages recorded)</i>"
 
+        # Serialized Download Links List
         links_list = info.get("download_links", [])
         if links_list:
             serialized_links = "\n".join(
@@ -1500,7 +1658,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
         )
         chunk_and_send(bot_instance, message.chat.id, details, parse_mode="HTML")
 
-    # /maintenance handler (ADMIN ONLY)
+    # /maintenance handler (ADMIN ONLY) - Broadcasts on BOTH ON and OFF
     @bot_instance.message_handler(commands=['maintenance'])
     def handle_maintenance(message: telebot.types.Message):
         if message.chat.id != ADMIN_ID:
@@ -1642,6 +1800,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
 
         text = (message.text or "").strip()
 
+        # Handle keyboard buttons
         if text == "📊 My Stats":
             handle_my_stats(message)
             return
@@ -1661,6 +1820,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
                 safe_reply(bot_instance, message, f"🔗 <b>Your Invite ID:</b> <code>{message.chat.id}</code>", parse_mode="HTML")
             return
 
+        # 'Create Own Bot' flow (AVAILABLE ONLY ON MAIN BOT)
         elif text == "🤖 Create Own Bot" or text == "/createbot":
             if is_clone:
                 safe_reply(bot_instance, message, "⚠️ <i>This cloned bot cannot create further sub-bots.</i>", parse_mode="HTML")
@@ -1678,6 +1838,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             safe_reply(bot_instance, message, prompt_text, parse_mode="HTML")
             return
 
+        # Check if user is sending a bot token for cloning
         if not is_clone and message.chat.id in AWAITING_BOT_TOKEN:
             candidate_token = text
             if re.match(r"^\d{8,12}:[a-zA-Z0-9_-]{35}$", candidate_token):
@@ -1688,6 +1849,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             else:
                 AWAITING_BOT_TOKEN.discard(message.chat.id)
 
+        # Explicit /ai command
         if text.startswith("/ai"):
             prompt = text[len("/ai"):].strip()
             if prompt:
@@ -1698,6 +1860,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
                 safe_reply(bot_instance, message, "⚠️ <b>Usage:</b> <code>/ai &lt;your question here&gt;</code>", parse_mode="HTML")
             return
 
+        # Explicit /image command
         if text.startswith("/image"):
             prompt = text[len("/image"):].strip()
             if prompt:
@@ -1708,28 +1871,41 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
                 safe_reply(bot_instance, message, "⚠️ <b>Usage:</b> <code>/image &lt;detailed image description&gt;</code>", parse_mode="HTML")
             return
 
-        # ----------------- LINK DETECTION ----------------- #
+        # ----------------- LINK DETECTION WITH INTERACTIVE CHOICES ----------------- #
 
+        # 1. Instagram Link Detection (Reels, Posts, Stories)
         if "instagram.com" in text.lower():
-            track_user_activity(message.from_user, "Instagram Download", text)
-            prompt_media_choice(bot_instance, message, text, "instagram")
+            url_match = re.search(r"https?://[^\s]+", text)
+            clean_link = url_match.group(0) if url_match else text
+            track_user_activity(message.from_user, "Instagram Download", clean_link)
+            prompt_media_choice(bot_instance, message, clean_link, "instagram")
             return
 
+        # 2. TikTok Link Detection (Normal, vm, vt)
         if "tiktok.com" in text.lower() or "vt.tiktok.com" in text.lower():
-            track_user_activity(message.from_user, "TikTok Download", text)
-            prompt_media_choice(bot_instance, message, text, "tiktok")
+            url_match = re.search(r"https?://[^\s]+", text)
+            clean_link = url_match.group(0) if url_match else text
+            track_user_activity(message.from_user, "TikTok Download", clean_link)
+            prompt_media_choice(bot_instance, message, clean_link, "tiktok")
             return
 
+        # 3. YouTube Link Detection (Videos, Shorts, youtu.be)
         if "youtube.com" in text.lower() or "youtu.be" in text.lower():
-            track_user_activity(message.from_user, "YouTube Download", text)
-            prompt_media_choice(bot_instance, message, text, "youtube")
+            url_match = re.search(r"https?://[^\s]+", text)
+            clean_link = url_match.group(0) if url_match else text
+            track_user_activity(message.from_user, "YouTube Download", clean_link)
+            prompt_media_choice(bot_instance, message, clean_link, "youtube")
             return
 
+        # 4. Facebook Link Detection (Videos, Reels, Watch, fb.gg)
         if "facebook.com" in text.lower() or "fb.watch" in text.lower() or "fb.gg" in text.lower():
-            track_user_activity(message.from_user, "Facebook Download", text)
-            prompt_media_choice(bot_instance, message, text, "facebook")
+            url_match = re.search(r"https?://[^\s]+", text)
+            clean_link = url_match.group(0) if url_match else text
+            track_user_activity(message.from_user, "Facebook Download", clean_link)
+            prompt_media_choice(bot_instance, message, clean_link, "facebook")
             return
 
+        # General Text -> AI Chat Assistant Fallback
         track_user_activity(message.from_user, "General Chat", text)
         status_msg = bot_instance.reply_to(message, "💭 <i>Thinking...</i>", parse_mode="HTML")
         EXECUTOR.submit(send_ai_response, bot_instance, message.chat.id, text, status_msg.message_id)
@@ -1792,7 +1968,7 @@ def execute_broadcast(admin_chat_id: int, text: str) -> None:
         try:
             bot.send_message(uid, broadcast_payload, parse_mode="HTML")
             sent += 1
-            time.sleep(0.04)
+            time.sleep(0.04)  # Rate limiting
         except Exception:
             failed += 1
 
@@ -1810,6 +1986,7 @@ def execute_broadcast(admin_chat_id: int, text: str) -> None:
 # ----------------- 'CREATE OWN BOT' MULTI-BOT SYSTEM ----------------- #
 
 def stop_cloned_bot(bot_id: str) -> None:
+    """Stops a cloned bot, terminates its polling loop, and saves state to database."""
     STOPPED_CLONES.add(bot_id)
     with FILE_LOCK:
         clones_db = load_data(CLONES_FILE)
@@ -1817,6 +1994,7 @@ def stop_cloned_bot(bot_id: str) -> None:
             clones_db[bot_id]["status"] = "stopped"
             save_data(CLONES_FILE, clones_db)
 
+    # Immediately terminate TeleBot polling
     if bot_id in ACTIVE_CLONES:
         try:
             ACTIVE_CLONES[bot_id].stop_polling()
@@ -1825,6 +2003,7 @@ def stop_cloned_bot(bot_id: str) -> None:
             log_error(f"Error stopping polling for bot {bot_id}: {stop_err}")
 
 def start_cloned_bot(bot_id: str) -> bool:
+    """Resumes or starts polling for a cloned bot."""
     STOPPED_CLONES.discard(bot_id)
     with FILE_LOCK:
         clones_db = load_data(CLONES_FILE)
@@ -1855,6 +2034,7 @@ def start_cloned_bot(bot_id: str) -> bool:
         return False
 
 def delete_cloned_bot(bot_id: str) -> None:
+    """Permanently deletes a cloned bot, stops its thread, and removes from database."""
     stop_cloned_bot(bot_id)
     with FILE_LOCK:
         clones_db = load_data(CLONES_FILE)
@@ -1864,6 +2044,7 @@ def delete_cloned_bot(bot_id: str) -> None:
     ACTIVE_CLONES.pop(bot_id, None)
 
 def launch_user_clone_bot(message: telebot.types.Message, token: str):
+    """Verifies user token, launches clone thread, and persists to clones_db.json."""
     try:
         test_bot = telebot.TeleBot(token, parse_mode=None)
         me = test_bot.get_me()
@@ -1941,6 +2122,7 @@ def run_clone_polling(clone_bot: telebot.TeleBot, username: str, bot_id: str):
             time.sleep(10)
 
 def restore_saved_clones():
+    """Restores all previously created clone bots upon master bot restart."""
     clones_db = load_data(CLONES_FILE)
     if isinstance(clones_db, dict) and clones_db:
         log(f"Restoring {len(clones_db)} cloned bots from database...")
