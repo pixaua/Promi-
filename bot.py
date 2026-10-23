@@ -2,29 +2,9 @@
 =============================================================================
 7G ULTIMATE TELEGRAM MASTER BOT (ENTERPRISE PRODUCTION EDITION)
 =============================================================================
-Primary Token: 7678905793:AAGfbBoPSsrV8cWyv6l9Nh4G1CuSLrbt3tk
+Primary Token: 7678905793:AAHzGB0W0RnYLRkLTkSkSJNTghHTUYFf2mQ
 Master Admin ID: 6162953772
 Meta AI API Key: nxt_3a454c41e6a84aeead28d1fb4aec87a4
-=============================================================================
-FEATURES INCLUDED:
-  1. Multi-Platform Media Downloader with Interactive Choice:
-     - 📸 Instagram Reels, Posts & Stories (With Guaranteed Audio)
-     - 🎵 TikTok HD (100% Watermark-Free + Audio Extractor)
-     - 🔴 YouTube Videos & Shorts (HD Video + MP3 Audio)
-     - 🔵 Facebook Videos & Reels (HD Video + MP3 Audio)
-  2. Interactive Inline Keyboard:
-     - 🎬 Download Video (HD) vs 🎵 Download Audio (MP3)
-  3. Meta AI Assistant Chat (/ai or direct text) & AI Image Generator (/image)
-  4. Complete User Activity Tracking (Joined date, timestamps, referrals, points)
-  5. Admin Dashboard (/stats & /users) with Serialized Messages & Downloaded Links
-  6. Detailed Single User Inspection (/userinfo <user_id>)
-  7. Ban & Unban System (/ban & /unban) with Instant Direct Notifications
-  8. Maintenance Mode Control (/maintenance) with Instant Auto-Broadcast
-  9. Admin Global Announcement Engine (/broadcast <message>)
- 10. Auto-Telegram Database Backup to Admin Inbox
- 11. "Create Own Bot" Multi-Bot System (Clone any bot token live without sub-cloning)
- 12. Master Admin Clone Management Panel (/clones, /stopbot, /startbot, /delbot)
- 13. 24/7 Keep-Alive Flask Server & Self-Ping Loop for Render/Railway/VPS
 =============================================================================
 """
 
@@ -79,7 +59,7 @@ def log_error(message: str, *args: Any) -> None:
     sys.stderr.flush()
 
 # ----------------- CONFIGURATION ----------------- #
-MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAGfbBoPSsrV8cWyv6l9Nh4G1CuSLrbt3tk").strip()
+MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAHzGB0W0RnYLRkLTkSkSJNTghHTUYFf2mQ").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6162953772"))
 
 META_AI_KEY = os.getenv("META_AI_API_KEY", "nxt_3a454c41e6a84aeead28d1fb4aec87a4").strip()
@@ -91,7 +71,7 @@ TIKWM_ENDPOINT = "https://www.tikwm.com/api/"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/128.0.0.0 Safari/537.36"
+    "Chrome/130.0.0.0 Safari/537.36"
 )
 
 MAX_TEXT_LENGTH = 3900
@@ -110,7 +90,7 @@ ACTIVE_CLONES: dict[str, telebot.TeleBot] = {}
 STOPPED_CLONES: set[str] = set()
 AWAITING_BOT_TOKEN: set[int] = set()
 
-# Pending Downloads Cache (Maps short 8-char id to link & platform info)
+# Pending Downloads Cache
 DOWNLOAD_CACHE: dict[str, dict[str, Any]] = {}
 CACHE_LOCK = threading.Lock()
 
@@ -147,7 +127,6 @@ def run_flask():
 
 # ----------------- RENDER 24/7 SELF-PING KEEP-ALIVE LOOP ----------------- #
 def keep_alive_ping_loop():
-    """Periodically pings the web service so Render free tier never spins down."""
     render_url = os.getenv("RENDER_EXTERNAL_URL", "").strip() or os.getenv("KEEP_ALIVE_URL", "").strip()
     if not render_url:
         log("Keep-alive self-ping: Waiting for RENDER_EXTERNAL_URL or live traffic.")
@@ -165,7 +144,6 @@ def keep_alive_ping_loop():
 
 # ----------------- DOWNLOAD CACHE HELPER ----------------- #
 def register_download_task(url: str, platform: str, user_id: int) -> str:
-    """Stores URL in cache with a short token and auto-prunes entries older than 6 hours."""
     with CACHE_LOCK:
         now = time.time()
         expired = [k for k, v in DOWNLOAD_CACHE.items() if now - v.get("timestamp", 0) > 21600]
@@ -218,7 +196,8 @@ def trigger_telegram_db_backup(filepath: str) -> None:
                     bf,
                     caption=(
                         f"🛡️ <b>Auto Telegram Database Backup Sync</b> ✨\n"
-                        f"🕒 <i>Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>"
+                        f"🕒 <i>Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>\n"
+                        f"💡 <i>Tip: Send this file to the bot with caption /restoredb anytime to restore data on Render!</i>"
                     ),
                     parse_mode="HTML"
                 )
@@ -290,7 +269,7 @@ def chunk_and_send(
         except Exception:
             bot_instance.send_message(chat_id, current_chunk, parse_mode=None)
 
-# ----------------- USER TRACKING & ADMIN ACTIVITY ALERTS ----------------- #
+# ----------------- USER TRACKING (AUTO INITIALIZE WITHOUT /START) ----------------- #
 def track_user_activity(
     user: telebot.types.User,
     action_type: str,
@@ -400,7 +379,6 @@ def download_to_temp_file(
     suffix: str = ".mp4",
     referer: str = "https://www.google.com/"
 ) -> str | None:
-    """Downloads media to local temp file to bypass Telegram 400 Bad Request error."""
     try:
         headers = {
             "User-Agent": USER_AGENT,
@@ -641,50 +619,109 @@ def download_tiktok(url: str, extract_audio: bool = False) -> tuple[str, str | N
 
     return "TikTok Media", None
 
-# ----------------- YOUTUBE DOWNLOADER (VIDEOS & SHORTS) ----------------- #
+# ----------------- YOUTUBE DOWNLOADER (BYPASS CLOUD IP / BOT RESTRICTIONS) ----------------- #
 
 def download_youtube(url: str, extract_audio: bool = False) -> tuple[str, str | None]:
+    """
+    Multi-Tier YouTube Downloader:
+    Uses player client spoofing ('ios', 'android', 'mweb') to bypass YouTube cloud IP bot detection,
+    with additional fallback to web stream extractors.
+    """
     clean_url = url.strip()
     temp_dir = tempfile.gettempdir()
     prefix = f"yt_{uuid.uuid4().hex[:8]}"
-    out_tmpl = os.path.join(temp_dir, f"{prefix}.%(ext)s")
 
+    # Multiple client player profiles in order of highest success rate on Render/Datacenters
+    player_client_sets = [
+        ['ios', 'android'],
+        ['android'],
+        ['mweb', 'web_safari'],
+        ['web']
+    ]
+
+    for client_list in player_client_sets:
+        out_tmpl = os.path.join(temp_dir, f"{prefix}_{client_list[0]}.%(ext)s")
+        try:
+            if extract_audio:
+                ydl_opts = {
+                    'format': 'bestaudio[ext=m4a]/bestaudio/best',
+                    'outtmpl': out_tmpl,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'socket_timeout': 30,
+                    'nocheckcertificate': True,
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': client_list,
+                            'skip': ['hls', 'dash']
+                        }
+                    },
+                    'http_headers': {
+                        'User-Agent': USER_AGENT,
+                        'Accept-Language': 'en-US,en;q=0.9',
+                    },
+                    'max_filesize': 49 * 1024 * 1024,
+                }
+            else:
+                ydl_opts = {
+                    'format': 'best[ext=mp4][height<=1080][vcodec!=none][acodec!=none]/bestvideo[height<=720]+bestaudio/best[height<=720]/best',
+                    'outtmpl': out_tmpl,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'socket_timeout': 30,
+                    'nocheckcertificate': True,
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': client_list,
+                            'skip': ['hls', 'dash']
+                        }
+                    },
+                    'http_headers': {
+                        'User-Agent': USER_AGENT,
+                        'Accept-Language': 'en-US,en;q=0.9',
+                    },
+                    'max_filesize': 49 * 1024 * 1024,
+                }
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(clean_url, download=True)
+                if info:
+                    title = info.get("title") or "YouTube Media"
+                    candidate_path = ydl.prepare_filename(info)
+                    if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 1000:
+                        return title, candidate_path
+                    for f in os.listdir(temp_dir):
+                        if f.startswith(f"{prefix}_{client_list[0]}"):
+                            f_path = os.path.join(temp_dir, f)
+                            if os.path.getsize(f_path) > 1000:
+                                return title, f_path
+        except Exception as client_err:
+            log_error(f"YouTube attempt with {client_list} failed: {client_err}")
+            continue
+
+    # Fallback to public YouTube web resolver
     try:
-        if extract_audio:
-            ydl_opts = {
-                'format': 'bestaudio[ext=m4a]/bestaudio/best',
-                'outtmpl': out_tmpl,
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 40,
-                'http_headers': {'User-Agent': USER_AGENT},
-                'max_filesize': 49 * 1024 * 1024,
-            }
-        else:
-            ydl_opts = {
-                'format': 'best[ext=mp4][height<=1080][vcodec!=none][acodec!=none]/bestvideo[height<=720]+bestaudio/best[height<=720]/best',
-                'outtmpl': out_tmpl,
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 45,
-                'http_headers': {'User-Agent': USER_AGENT},
-                'max_filesize': 49 * 1024 * 1024,
-            }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(clean_url, download=True)
-            if info:
-                title = info.get("title") or "YouTube Media"
-                candidate_path = ydl.prepare_filename(info)
-                if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 1000:
-                    return title, candidate_path
-                for f in os.listdir(temp_dir):
-                    if f.startswith(prefix):
-                        f_path = os.path.join(temp_dir, f)
-                        if os.path.getsize(f_path) > 1000:
-                            return title, f_path
-    except Exception as yt_err:
-        log_error(f"YouTube download failed: {yt_err}")
+        cobalt_payload = {
+            "url": clean_url,
+            "vQuality": "720",
+            "isAudioOnly": extract_audio
+        }
+        res = HTTP_SESSION.post(
+            "https://api.cobalt.tools/api/json",
+            json=cobalt_payload,
+            headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+            timeout=15
+        )
+        if res.status_code == 200:
+            data = res.json()
+            stream_url = data.get("url")
+            if stream_url:
+                suffix = ".mp3" if extract_audio else ".mp4"
+                tmp_f = download_to_temp_file(stream_url, suffix=suffix, referer="https://cobalt.tools/")
+                if tmp_f:
+                    return "YouTube Media", tmp_f
+    except Exception as cobalt_err:
+        log_error(f"YouTube Cobalt fallback failed: {cobalt_err}")
 
     return "YouTube Media", None
 
@@ -703,7 +740,7 @@ def download_facebook(url: str, extract_audio: bool = False) -> tuple[str, str |
                 'outtmpl': out_tmpl,
                 'quiet': True,
                 'no_warnings': True,
-                'socket_timeout': 40,
+                'socket_timeout': 35,
                 'http_headers': {
                     'User-Agent': USER_AGENT,
                     'Referer': 'https://www.facebook.com/'
@@ -716,7 +753,7 @@ def download_facebook(url: str, extract_audio: bool = False) -> tuple[str, str |
                 'outtmpl': out_tmpl,
                 'quiet': True,
                 'no_warnings': True,
-                'socket_timeout': 40,
+                'socket_timeout': 35,
                 'http_headers': {
                     'User-Agent': USER_AGENT,
                     'Referer': 'https://www.facebook.com/'
@@ -777,7 +814,6 @@ def query_meta_ai(prompt: str) -> str:
     except Exception as e:
         log_error(f"Primary Meta AI endpoint failed: {e}")
 
-    # Fallback to direct Gemini / Open endpoint
     try:
         fb_url = f"https://text.pollinations.ai/{quote(prompt)}?model=openai"
         res = HTTP_SESSION.get(fb_url, timeout=25)
@@ -859,7 +895,6 @@ def prompt_media_choice(
     url: str,
     platform: str
 ) -> None:
-    """Sends an inline keyboard asking user to choose Video (HD) or Audio (MP3)."""
     short_id = register_download_task(url, platform, message.chat.id)
 
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -892,7 +927,7 @@ def process_download_execution(
     chat_id: int,
     status_msg_id: int,
     short_id: str,
-    format_type: str  # "v" or "a"
+    format_type: str
 ) -> None:
     task = get_download_task(short_id)
     if not task:
@@ -1019,11 +1054,25 @@ def process_download_execution(
 
 # ----------------- TELEGRAM BOT HANDLER REGISTRATION ----------------- #
 
-def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False):
+def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False, clone_id: str | None = None):
     """Registers commands, callback queries, and message handlers on any bot instance."""
+
+    def clone_is_disabled() -> bool:
+        if is_clone and clone_id:
+            if clone_id in STOPPED_CLONES:
+                return True
+            clones_db = load_data(CLONES_FILE)
+            if clone_id not in clones_db:
+                return True
+            if clones_db.get(clone_id, {}).get("status") == "stopped":
+                return True
+        return False
 
     @bot_instance.callback_query_handler(func=lambda call: True)
     def handle_callback_query(call: telebot.types.CallbackQuery):
+        if clone_is_disabled():
+            return
+
         data = call.data or ""
 
         # Format: dl:v:<short_id> or dl:a:<short_id>
@@ -1046,7 +1095,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
                 )
             return
 
-        # Admin Clone Bot Actions: clone:stop:<bot_id>, clone:start:<bot_id>, clone:del:<bot_id>
+        # Admin Clone Bot Actions
         if data.startswith("clone:"):
             if call.from_user.id != ADMIN_ID:
                 try:
@@ -1061,32 +1110,26 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
                 target_bot_id = parts[2]
 
                 if action == "stop":
-                    STOPPED_CLONES.add(target_bot_id)
+                    stop_cloned_bot(target_bot_id)
                     try:
                         bot_instance.answer_callback_query(call.id, text=f"🛑 Bot ID {target_bot_id} stopped!")
-                        safe_reply(bot_instance, call.message, f"🛑 Cloned Bot <code>{target_bot_id}</code> has been stopped.", parse_mode="HTML")
+                        safe_reply(bot_instance, call.message, f"🛑 <b>Cloned Bot <code>{target_bot_id}</code> has been stopped and polling terminated.</b>", parse_mode="HTML")
                     except Exception:
                         pass
 
                 elif action == "start":
-                    STOPPED_CLONES.discard(target_bot_id)
+                    start_cloned_bot(target_bot_id)
                     try:
                         bot_instance.answer_callback_query(call.id, text=f"▶️ Bot ID {target_bot_id} resumed!")
-                        safe_reply(bot_instance, call.message, f"▶️ Cloned Bot <code>{target_bot_id}</code> is resumed.", parse_mode="HTML")
+                        safe_reply(bot_instance, call.message, f"▶️ <b>Cloned Bot <code>{target_bot_id}</code> is resumed and polling active.</b>", parse_mode="HTML")
                     except Exception:
                         pass
 
                 elif action == "del":
-                    STOPPED_CLONES.add(target_bot_id)
-                    with FILE_LOCK:
-                        clones_db = load_data(CLONES_FILE)
-                        if target_bot_id in clones_db:
-                            del clones_db[target_bot_id]
-                            save_data(CLONES_FILE, clones_db)
-                    ACTIVE_CLONES.pop(target_bot_id, None)
+                    delete_cloned_bot(target_bot_id)
                     try:
-                        bot_instance.answer_callback_query(call.id, text=f"🗑️ Bot ID {target_bot_id} deleted!")
-                        safe_reply(bot_instance, call.message, f"🗑️ Cloned Bot <code>{target_bot_id}</code> removed permanently.", parse_mode="HTML")
+                        bot_instance.answer_callback_query(call.id, text=f"🗑️ Bot ID {target_bot_id} deleted permanently!")
+                        safe_reply(bot_instance, call.message, f"🗑️ <b>Cloned Bot <code>{target_bot_id}</code> removed permanently from database and stopped.</b>", parse_mode="HTML")
                     except Exception:
                         pass
             return
@@ -1094,6 +1137,9 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
     # /start command handler
     @bot_instance.message_handler(commands=['start'])
     def handle_start(message: telebot.types.Message):
+        if clone_is_disabled():
+            return
+
         if is_banned(message.chat.id):
             safe_reply(bot_instance, message, "❌ <b>Notice: Your access to this bot is currently banned.</b>", parse_mode="HTML")
             return
@@ -1125,25 +1171,27 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
         keyboard.row(btn_create)
 
         welcome_text = (
-            "✨🔥 <b>Welcome to 7G Ultimate Master Bot!</b> 🔥✨\n"
+            "⚡ <b>All-in-One Multi-Media Downloader & AI Assistant</b> ✨\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "⚡ <b>All-in-One Multi-Platform Media Downloader & AI:</b>\n\n"
-            "📥 <b>Just Send Any Media Link:</b>\n"
-            "• 📸 <b>Instagram:</b> Reels, Posts, IGTV (Guaranteed Audio)\n"
-            "• 🎵 <b>TikTok:</b> HD Video (No Watermark) & Audio (MP3)\n"
-            "• 🔴 <b>YouTube:</b> HD Videos & Shorts + MP3 Audio\n"
+            "🌟 <b>Instant HD Downloader (No Watermarks):</b>\n"
+            "• 📸 <b>Instagram:</b> Reels, Posts & Stories <i>(Full Audio Guarantee)</i>\n"
+            "• 🎵 <b>TikTok:</b> Ultra HD Video & MP3 Audio\n"
+            "• 🔴 <b>YouTube:</b> HD 1080p Videos & Shorts + MP3 Audio\n"
             "• 🔵 <b>Facebook:</b> HD Videos & Reels + MP3 Audio\n\n"
-            "🤖 <b>Meta AI Assistant:</b> Chat freely or use <code>/ai &lt;query&gt;</code>\n"
-            "🎨 <b>AI Image Generator:</b> Create photos with <code>/image &lt;prompt&gt;</code>\n"
-            "🤖 <b>Clone System:</b> Tap <i>'Create Own Bot'</i> to launch your personal bot for FREE!\n"
+            "🤖 <b>Smart Features:</b>\n"
+            "• 💡 <b>Meta AI Assistant:</b> Chat directly or use <code>/ai &lt;query&gt;</code>\n"
+            "• 🎨 <b>AI Image Generator:</b> Create photos with <code>/image &lt;prompt&gt;</code>\n"
+            "• 🤖 <b>Host Your Own Bot:</b> Tap <i>'Create Own Bot'</i> for 100% FREE cloning!\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "👇 <i>Choose a button below or paste any link to start!</i>"
+            "👉 <i>Just paste any link below or choose an option to get started!</i>"
         )
         safe_reply(bot_instance, message, welcome_text, parse_mode="HTML", reply_markup=keyboard)
 
     # /mystats command handler
     @bot_instance.message_handler(commands=['mystats'])
     def handle_my_stats(message: telebot.types.Message):
+        if clone_is_disabled():
+            return
         users_db = load_data(USER_FILE)
         uid = str(message.chat.id)
         uinfo = users_db.get(uid, {})
@@ -1155,7 +1203,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
         referrals = len(uinfo.get("referrals", []))
 
         stats_text = (
-            f"📊 <b>YOUR 7G BOT ACTIVITY STATS</b>\n"
+            f"📊 <b>YOUR BOT ACTIVITY STATS</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"👤 <b>Name:</b> {escape(message.from_user.first_name)}\n"
             f"🆔 <b>User ID:</b> <code>{message.chat.id}</code>\n"
@@ -1188,27 +1236,28 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
         total_messages = sum(u.get("msg_count", 0) for u in users_db.values() if isinstance(u, dict))
 
         dashboard = (
-            f"👑 <b>7G MASTER ADMIN DASHBOARD</b>\n"
+            f"👑 <b>MASTER ADMIN DASHBOARD</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"👥 <b>Total Registered Users:</b> <code>{total_users}</code>\n"
             f"📥 <b>Total Media Downloads:</b> <code>{total_downloads}</code>\n"
             f"💬 <b>Total User Messages:</b> <code>{total_messages}</code>\n"
-            f"🤖 <b>Active Cloned Bots:</b> <code>{total_clones}</code>\n"
+            f"🤖 <b>Total Cloned Bots:</b> <code>{total_clones}</code>\n"
             f"🚫 <b>Banned Users:</b> <code>{total_banned}</code>\n"
             f"🛠️ <b>Maintenance Mode:</b> <b>{maintenance}</b>\n"
             f"🕒 <b>Server Time:</b> <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"⚡ <b>Commands:</b>\n"
-            f"• <code>/clones</code> - Manage all cloned bots\n"
+            f"• <code>/clones</code> - Manage all cloned bots (Stop/Start/Delete)\n"
             f"• <code>/users</code> - List all registered users\n"
             f"• <code>/userinfo &lt;id&gt;</code> - Inspect user history\n"
             f"• <code>/ban &lt;id&gt;</code> & <code>/unban &lt;id&gt;</code>\n"
             f"• <code>/broadcast &lt;text&gt;</code> - Global announcement\n"
-            f"• <code>/maintenance</code> - Toggle maintenance"
+            f"• <code>/maintenance</code> - Toggle maintenance (broadcasts on ON & OFF)\n"
+            f"• <code>/restoredb</code> - Reply to a backup json to restore DB!"
         )
         safe_reply(bot_instance, message, dashboard, parse_mode="HTML")
 
-    # /clones handler (ADMIN ONLY) - Manage Cloned Bots
+    # /clones handler (ADMIN ONLY)
     @bot_instance.message_handler(commands=['clones', 'managebots'])
     def handle_clones_admin(message: telebot.types.Message):
         if message.chat.id != ADMIN_ID:
@@ -1227,7 +1276,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
         markup = types.InlineKeyboardMarkup(row_width=2)
 
         for idx, (b_id, info) in enumerate(clones_db.items(), start=1):
-            is_stopped = b_id in STOPPED_CLONES
+            is_stopped = (info.get("status") == "stopped") or (b_id in STOPPED_CLONES)
             status_emoji = "🔴 STOPPED" if is_stopped else "🟢 ACTIVE"
             uname = info.get("username", "Unknown")
             owner_id = info.get("owner_id", "Unknown")
@@ -1270,8 +1319,8 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
             safe_reply(bot_instance, message, "⚠️ <b>Usage:</b> <code>/stopbot &lt;bot_id&gt;</code>", parse_mode="HTML")
             return
         target_id = tokens[1].strip()
-        STOPPED_CLONES.add(target_id)
-        safe_reply(bot_instance, message, f"🛑 <b>Cloned Bot <code>{target_id}</code> is now stopped.</b>", parse_mode="HTML")
+        stop_cloned_bot(target_id)
+        safe_reply(bot_instance, message, f"🛑 <b>Cloned Bot <code>{target_id}</code> has been stopped and polling terminated.</b>", parse_mode="HTML")
 
     # /startbot <bot_id> handler (ADMIN ONLY)
     @bot_instance.message_handler(commands=['startbot'])
@@ -1283,8 +1332,8 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
             safe_reply(bot_instance, message, "⚠️ <b>Usage:</b> <code>/startbot &lt;bot_id&gt;</code>", parse_mode="HTML")
             return
         target_id = tokens[1].strip()
-        STOPPED_CLONES.discard(target_id)
-        safe_reply(bot_instance, message, f"▶️ <b>Cloned Bot <code>{target_id}</code> is now resumed.</b>", parse_mode="HTML")
+        start_cloned_bot(target_id)
+        safe_reply(bot_instance, message, f"▶️ <b>Cloned Bot <code>{target_id}</code> is now resumed and active.</b>", parse_mode="HTML")
 
     # /delbot <bot_id> handler (ADMIN ONLY)
     @bot_instance.message_handler(commands=['delbot'])
@@ -1296,14 +1345,56 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
             safe_reply(bot_instance, message, "⚠️ <b>Usage:</b> <code>/delbot &lt;bot_id&gt;</code>", parse_mode="HTML")
             return
         target_id = tokens[1].strip()
-        STOPPED_CLONES.add(target_id)
-        with FILE_LOCK:
-            clones_db = load_data(CLONES_FILE)
-            if target_id in clones_db:
-                del clones_db[target_id]
-                save_data(CLONES_FILE, clones_db)
-        ACTIVE_CLONES.pop(target_id, None)
-        safe_reply(bot_instance, message, f"🗑️ <b>Cloned Bot <code>{target_id}</code> removed permanently from database.</b>", parse_mode="HTML")
+        delete_cloned_bot(target_id)
+        safe_reply(bot_instance, message, f"🗑️ <b>Cloned Bot <code>{target_id}</code> removed permanently from database and stopped.</b>", parse_mode="HTML")
+
+    # /restoredb handler (ADMIN ONLY)
+    @bot_instance.message_handler(commands=['restoredb', 'restoreusers'])
+    def handle_restore_db(message: telebot.types.Message):
+        if message.chat.id != ADMIN_ID:
+            return
+
+        doc = None
+        if message.reply_to_message and message.reply_to_message.document:
+            doc = message.reply_to_message.document
+        elif message.document:
+            doc = message.document
+
+        if not doc:
+            safe_reply(
+                bot_instance,
+                message,
+                "⚠️ <b>How to Restore:</b> Reply to any backup JSON file (e.g. <code>users_db.json</code>) with <code>/restoredb</code>!",
+                parse_mode="HTML"
+            )
+            return
+
+        try:
+            file_info = bot_instance.get_file(doc.file_id)
+            downloaded = bot_instance.download_file(file_info.file_path)
+            content = json.loads(downloaded.decode("utf-8"))
+
+            if isinstance(content, dict):
+                first_val = next(iter(content.values()), {})
+                if isinstance(first_val, dict) and "first_seen" in first_val:
+                    with FILE_LOCK:
+                        existing = load_data(USER_FILE)
+                        if isinstance(existing, dict):
+                            existing.update(content)
+                            save_data(USER_FILE, existing)
+                        else:
+                            save_data(USER_FILE, content)
+                    safe_reply(bot_instance, message, f"✅ <b>Successfully restored {len(content)} users into database!</b>", parse_mode="HTML")
+                elif isinstance(first_val, dict) and "token" in first_val:
+                    with FILE_LOCK:
+                        save_data(CLONES_FILE, content)
+                    restore_saved_clones()
+                    safe_reply(bot_instance, message, f"✅ <b>Successfully restored {len(content)} cloned bots into database!</b>", parse_mode="HTML")
+                else:
+                    safe_reply(bot_instance, message, "⚠️ Unrecognized JSON format.", parse_mode="HTML")
+        except Exception as rest_err:
+            log_error(f"Failed to restore DB: {rest_err}")
+            safe_reply(bot_instance, message, f"❌ <b>Restore Failed:</b> <i>{escape(str(rest_err))}</i>", parse_mode="HTML")
 
     # /users handler (ADMIN ONLY)
     @bot_instance.message_handler(commands=['users'])
@@ -1373,7 +1464,6 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
         referred_by = info.get("referred_by") or "None (Direct)"
         referrals = info.get("referrals", [])
 
-        # Serialized Messages List
         messages_list = info.get("messages", [])
         if messages_list:
             serialized_msgs = "\n".join(
@@ -1382,7 +1472,6 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
         else:
             serialized_msgs = "  <i>(No text messages recorded)</i>"
 
-        # Serialized Download Links List
         links_list = info.get("download_links", [])
         if links_list:
             serialized_links = "\n".join(
@@ -1430,14 +1519,15 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
                 "🛠️ <b>Maintenance mode turned ON! Broadcasting notice to all registered users...</b>",
                 parse_mode="HTML"
             )
-            EXECUTOR.submit(broadcast_maintenance_notice, message.chat.id)
+            EXECUTOR.submit(broadcast_maintenance_notice, message.chat.id, True)
         else:
             safe_reply(
                 bot_instance,
                 message,
-                "✅ <b>Maintenance mode turned OFF! The bot is now unlocked and accessible for everyone.</b>",
+                "✅ <b>Maintenance mode turned OFF! Broadcasting completion notice to all registered users...</b>",
                 parse_mode="HTML"
             )
+            EXECUTOR.submit(broadcast_maintenance_notice, message.chat.id, False)
 
     # /ban <user_id> handler (ADMIN ONLY)
     @bot_instance.message_handler(commands=['ban'])
@@ -1533,6 +1623,9 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
     # General incoming messages and link processor
     @bot_instance.message_handler(func=lambda message: True)
     def process_incoming_text(message: telebot.types.Message):
+        if clone_is_disabled():
+            return
+
         if is_banned(message.chat.id):
             safe_reply(bot_instance, message, "❌ <b>Notice: Your access to this bot is currently banned.</b>", parse_mode="HTML")
             return
@@ -1549,7 +1642,6 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
 
         text = (message.text or "").strip()
 
-        # Handle keyboard buttons
         if text == "📊 My Stats":
             handle_my_stats(message)
             return
@@ -1569,7 +1661,6 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
                 safe_reply(bot_instance, message, f"🔗 <b>Your Invite ID:</b> <code>{message.chat.id}</code>", parse_mode="HTML")
             return
 
-        # 'Create Own Bot' flow (AVAILABLE ONLY ON MAIN BOT)
         elif text == "🤖 Create Own Bot" or text == "/createbot":
             if is_clone:
                 safe_reply(bot_instance, message, "⚠️ <i>This cloned bot cannot create further sub-bots.</i>", parse_mode="HTML")
@@ -1577,17 +1668,16 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
 
             AWAITING_BOT_TOKEN.add(message.chat.id)
             prompt_text = (
-                "🤖 <b>Create & Host Your Own 7G Bot For FREE!</b>\n"
+                "🤖 <b>Create & Host Your Own Bot For FREE!</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━\n"
                 "1. Go to @BotFather on Telegram.\n"
                 "2. Create a new bot with <code>/newbot</code> and copy your <b>Bot Token</b>.\n"
                 "3. <b>Paste and send your Bot Token directly here in this chat!</b>\n\n"
-                "⚡ <i>Your personal bot will instantly go LIVE with Instagram (Audio included), TikTok HD, YouTube, Facebook & AI features!</i>"
+                "⚡ <i>Your personal bot will instantly go LIVE with Instagram, TikTok HD, YouTube, Facebook & AI features!</i>"
             )
             safe_reply(bot_instance, message, prompt_text, parse_mode="HTML")
             return
 
-        # Check if user is sending a bot token for cloning
         if not is_clone and message.chat.id in AWAITING_BOT_TOKEN:
             candidate_token = text
             if re.match(r"^\d{8,12}:[a-zA-Z0-9_-]{35}$", candidate_token):
@@ -1598,7 +1688,6 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
             else:
                 AWAITING_BOT_TOKEN.discard(message.chat.id)
 
-        # Explicit /ai command
         if text.startswith("/ai"):
             prompt = text[len("/ai"):].strip()
             if prompt:
@@ -1609,7 +1698,6 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
                 safe_reply(bot_instance, message, "⚠️ <b>Usage:</b> <code>/ai &lt;your question here&gt;</code>", parse_mode="HTML")
             return
 
-        # Explicit /image command
         if text.startswith("/image"):
             prompt = text[len("/image"):].strip()
             if prompt:
@@ -1620,44 +1708,46 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False)
                 safe_reply(bot_instance, message, "⚠️ <b>Usage:</b> <code>/image &lt;detailed image description&gt;</code>", parse_mode="HTML")
             return
 
-        # ----------------- LINK DETECTION WITH INTERACTIVE CHOICES ----------------- #
+        # ----------------- LINK DETECTION ----------------- #
 
-        # 1. Instagram Link Detection
         if "instagram.com" in text.lower():
             track_user_activity(message.from_user, "Instagram Download", text)
             prompt_media_choice(bot_instance, message, text, "instagram")
             return
 
-        # 2. TikTok Link Detection
         if "tiktok.com" in text.lower() or "vt.tiktok.com" in text.lower():
             track_user_activity(message.from_user, "TikTok Download", text)
             prompt_media_choice(bot_instance, message, text, "tiktok")
             return
 
-        # 3. YouTube Link Detection (Videos & Shorts)
         if "youtube.com" in text.lower() or "youtu.be" in text.lower():
             track_user_activity(message.from_user, "YouTube Download", text)
             prompt_media_choice(bot_instance, message, text, "youtube")
             return
 
-        # 4. Facebook Link Detection (Videos & Reels)
         if "facebook.com" in text.lower() or "fb.watch" in text.lower() or "fb.gg" in text.lower():
             track_user_activity(message.from_user, "Facebook Download", text)
             prompt_media_choice(bot_instance, message, text, "facebook")
             return
 
-        # General Text -> AI Chat Assistant Fallback
         track_user_activity(message.from_user, "General Chat", text)
         status_msg = bot_instance.reply_to(message, "💭 <i>Thinking...</i>", parse_mode="HTML")
         EXECUTOR.submit(send_ai_response, bot_instance, message.chat.id, text, status_msg.message_id)
 
 # ----------------- BROADCAST & MAINTENANCE ENGINES ----------------- #
 
-def broadcast_maintenance_notice(admin_chat_id: int) -> None:
-    notice_text = (
-        "⚠️ Notice: The bot is currently undergoing system security updates and maintenance. "
-        "It is temporarily unavailable. Please try again later!"
-    )
+def broadcast_maintenance_notice(admin_chat_id: int, is_maintenance_on: bool) -> None:
+    if is_maintenance_on:
+        notice_text = (
+            "⚠️ <b>Notice:</b> The bot is currently undergoing system security updates and maintenance. "
+            "It is temporarily unavailable. Please try again later! 🛠️"
+        )
+    else:
+        notice_text = (
+            "✅ <b>Notice:</b> System maintenance is completed! "
+            "The bot is now fully online, unlocked, and ready for you to use. Enjoy! 🚀✨"
+        )
+
     users_db = load_data(USER_FILE)
     if not isinstance(users_db, dict):
         return
@@ -1668,16 +1758,17 @@ def broadcast_maintenance_notice(admin_chat_id: int) -> None:
         if str(uid) == str(ADMIN_ID):
             continue
         try:
-            bot.send_message(uid, notice_text)
+            bot.send_message(uid, notice_text, parse_mode="HTML")
             sent += 1
             time.sleep(0.04)
         except Exception:
             failed += 1
 
+    mode_label = "TURNED ON" if is_maintenance_on else "TURNED OFF"
     try:
         bot.send_message(
             admin_chat_id,
-            f"📢 <b>Maintenance Broadcast Completed:</b>\n"
+            f"📢 <b>Maintenance Notice ({mode_label}) Broadcast Completed:</b>\n"
             f"✅ Sent: <code>{sent}</code>\n"
             f"⚠️ Failed/Blocked: <code>{failed}</code>",
             parse_mode="HTML"
@@ -1718,8 +1809,61 @@ def execute_broadcast(admin_chat_id: int, text: str) -> None:
 
 # ----------------- 'CREATE OWN BOT' MULTI-BOT SYSTEM ----------------- #
 
+def stop_cloned_bot(bot_id: str) -> None:
+    STOPPED_CLONES.add(bot_id)
+    with FILE_LOCK:
+        clones_db = load_data(CLONES_FILE)
+        if bot_id in clones_db:
+            clones_db[bot_id]["status"] = "stopped"
+            save_data(CLONES_FILE, clones_db)
+
+    if bot_id in ACTIVE_CLONES:
+        try:
+            ACTIVE_CLONES[bot_id].stop_polling()
+            log(f"Stopped polling for cloned bot ID: {bot_id}")
+        except Exception as stop_err:
+            log_error(f"Error stopping polling for bot {bot_id}: {stop_err}")
+
+def start_cloned_bot(bot_id: str) -> bool:
+    STOPPED_CLONES.discard(bot_id)
+    with FILE_LOCK:
+        clones_db = load_data(CLONES_FILE)
+        if bot_id not in clones_db:
+            return False
+        clones_db[bot_id]["status"] = "active"
+        save_data(CLONES_FILE, clones_db)
+        token = clones_db[bot_id].get("token")
+        username = clones_db[bot_id].get("username", "Unknown")
+
+    if not token:
+        return False
+
+    try:
+        clone_bot = telebot.TeleBot(token, parse_mode=None)
+        try:
+            clone_bot.delete_webhook(drop_pending_updates=True)
+        except Exception:
+            pass
+        register_bot_handlers(clone_bot, is_clone=True, clone_id=bot_id)
+        ACTIVE_CLONES[bot_id] = clone_bot
+        t = threading.Thread(target=run_clone_polling, args=(clone_bot, username, bot_id), daemon=True)
+        t.start()
+        log(f"Started polling for cloned bot @{username} (ID: {bot_id})")
+        return True
+    except Exception as start_err:
+        log_error(f"Failed to start bot {bot_id}: {start_err}")
+        return False
+
+def delete_cloned_bot(bot_id: str) -> None:
+    stop_cloned_bot(bot_id)
+    with FILE_LOCK:
+        clones_db = load_data(CLONES_FILE)
+        if bot_id in clones_db:
+            del clones_db[bot_id]
+            save_data(CLONES_FILE, clones_db)
+    ACTIVE_CLONES.pop(bot_id, None)
+
 def launch_user_clone_bot(message: telebot.types.Message, token: str):
-    """Verifies user token, launches clone thread, and persists to clones_db.json."""
     try:
         test_bot = telebot.TeleBot(token, parse_mode=None)
         me = test_bot.get_me()
@@ -1731,7 +1875,7 @@ def launch_user_clone_bot(message: telebot.types.Message, token: str):
         except Exception:
             pass
 
-        register_bot_handlers(test_bot, is_clone=True)
+        register_bot_handlers(test_bot, is_clone=True, clone_id=bot_id)
 
         with FILE_LOCK:
             clones_db = load_data(CLONES_FILE)
@@ -1742,7 +1886,8 @@ def launch_user_clone_bot(message: telebot.types.Message, token: str):
                 "username": bot_username,
                 "owner_id": message.chat.id,
                 "owner_name": message.from_user.first_name,
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "active"
             }
             save_data(CLONES_FILE, clones_db, trigger_backup=False)
 
@@ -1764,7 +1909,7 @@ def launch_user_clone_bot(message: telebot.types.Message, token: str):
 
         bot.send_message(
             ADMIN_ID,
-            f"🤖 <b>New Bot Cloned!</b>\nOwner: <code>{message.chat.id}</code> ({message.from_user.first_name})\nBot: @{bot_username}",
+            f"🤖 <b>New Bot Cloned!</b>\nOwner: <code>{message.chat.id}</code> ({message.from_user.first_name})\nBot: @{bot_username} (ID: <code>{bot_id}</code>)",
             parse_mode="HTML"
         )
     except Exception as e:
@@ -1780,22 +1925,34 @@ def run_clone_polling(clone_bot: telebot.TeleBot, username: str, bot_id: str):
     log(f"Cloned bot @{username} polling initialized.")
     while True:
         if bot_id in STOPPED_CLONES:
-            time.sleep(5)
-            continue
+            log(f"Clone polling loop exiting for stopped bot ID: {bot_id}")
+            break
+        with FILE_LOCK:
+            clones_db = load_data(CLONES_FILE)
+            if bot_id not in clones_db or clones_db.get(bot_id, {}).get("status") == "stopped":
+                log(f"Clone polling loop exiting for bot ID: {bot_id} (marked stopped or deleted)")
+                break
         try:
             clone_bot.infinity_polling(timeout=30, long_polling_timeout=20, skip_pending=True)
         except Exception as err:
+            if bot_id in STOPPED_CLONES:
+                break
             log_error(f"Cloned bot @{username} polling error: {err}. Reconnecting in 10s...")
             time.sleep(10)
 
 def restore_saved_clones():
-    """Restores all previously created clone bots upon master bot restart."""
     clones_db = load_data(CLONES_FILE)
     if isinstance(clones_db, dict) and clones_db:
-        log(f"Restoring {len(clones_db)} active cloned bots from database...")
+        log(f"Restoring {len(clones_db)} cloned bots from database...")
         for bot_id, item in clones_db.items():
             token = item.get("token")
             username = item.get("username", "UnknownBot")
+            status = item.get("status", "active")
+            if status == "stopped":
+                STOPPED_CLONES.add(bot_id)
+                log(f"Cloned bot @{username} is marked STOPPED; skipping launch.")
+                continue
+
             if token and bot_id not in STOPPED_CLONES:
                 try:
                     clone_bot = telebot.TeleBot(token, parse_mode=None)
@@ -1803,7 +1960,7 @@ def restore_saved_clones():
                         clone_bot.delete_webhook(drop_pending_updates=True)
                     except Exception:
                         pass
-                    register_bot_handlers(clone_bot, is_clone=True)
+                    register_bot_handlers(clone_bot, is_clone=True, clone_id=bot_id)
                     ACTIVE_CLONES[bot_id] = clone_bot
                     t = threading.Thread(target=run_clone_polling, args=(clone_bot, username, bot_id), daemon=True)
                     t.start()
