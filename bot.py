@@ -2,7 +2,7 @@
 =============================================================================
 7G ULTIMATE TELEGRAM MASTER BOT (ENTERPRISE PRODUCTION EDITION)
 =============================================================================
-Primary Token: 7678905793:AAHzGB0W0RnYLRkLTkSkSJNTghHTUYFf2mQ
+Primary Token: 7678905793:AAHvRXVmRSF1UlC_T5Gn3K0j4n2PeZB8fmA
 Master Admin ID: 6162953772
 Meta AI API Key: nxt_3a454c41e6a84aeead28d1fb4aec87a4
 =============================================================================
@@ -87,8 +87,13 @@ def log_error(message: str, *args: Any) -> None:
     sys.stderr.flush()
 
 # ----------------- CONFIGURATION ----------------- #
-MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAHzGB0W0RnYLRkLTkSkSJNTghHTUYFf2mQ").strip()
+MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAHvRXVmRSF1UlC_T5Gn3K0j4n2PeZB8fmA").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6162953772"))
+
+# RapidAPI Integrations (YouTube Downloader + Search & Instagram Audio Autolink)
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "8ab82c2a2fmshd7c1d7c96acc63fp170cfajsnd4d72661f86a").strip()
+RAPIDAPI_YT_HOST = "youtube-media-downloader.p.rapidapi.com"
+RAPIDAPI_IG_HOST = "social-download-all-in-one.p.rapidapi.com"
 
 META_AI_KEY = os.getenv("META_AI_API_KEY", "nxt_3a454c41e6a84aeead28d1fb4aec87a4").strip()
 META_AI_GEM_ID = os.getenv("META_AI_GEM_ID", "ba0fbe0d-976e-493a-afdb-6d8469e53df0")
@@ -118,8 +123,9 @@ ACTIVE_CLONES: dict[str, telebot.TeleBot] = {}
 STOPPED_CLONES: set[str] = set()
 AWAITING_BOT_TOKEN: set[int] = set()
 
-# Pending Downloads Cache (Maps short 8-char id to link & platform info)
+# Pending Downloads Cache & AI Query Cache
 DOWNLOAD_CACHE: dict[str, dict[str, Any]] = {}
+AI_QUERY_CACHE: dict[str, str] = {}
 CACHE_LOCK = threading.Lock()
 
 # Global Pooled HTTP Session
@@ -463,6 +469,35 @@ def download_instagram(url: str, extract_audio: bool = False) -> tuple[str, str 
     temp_dir = tempfile.gettempdir()
     prefix = f"ig_{uuid.uuid4().hex[:8]}"
 
+    # Method 0: RapidAPI Social Download All-in-One (autolink - Guaranteed Audio)
+    if RAPIDAPI_KEY:
+        try:
+            rapid_headers = {
+                "x-rapidapi-key": RAPIDAPI_KEY,
+                "x-rapidapi-host": RAPIDAPI_IG_HOST,
+                "Content-Type": "application/json"
+            }
+            resp = HTTP_SESSION.post(
+                f"https://{RAPIDAPI_IG_HOST}/v1/social/autolink",
+                json={"url": clean_url},
+                headers=rapid_headers,
+                timeout=12
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                medias = data.get("medias", []) or data.get("media", []) or data.get("data", [])
+                title = data.get("title") or "Instagram Media"
+                if isinstance(medias, list) and medias:
+                    for item in medias:
+                        m_url = item.get("url") if isinstance(item, dict) else str(item)
+                        if m_url:
+                            suffix = ".m4a" if extract_audio else ".mp4"
+                            tmp_file = download_to_temp_file(m_url, suffix=suffix, referer="https://www.instagram.com/")
+                            if tmp_file and os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 1000:
+                                return title, tmp_file
+        except Exception as rapid_ig_err:
+            log_error(f"RapidAPI Instagram autolink error: {rapid_ig_err}")
+
     # Method 1: yt-dlp Native Direct Downloader with audio guaranteed selector
     try:
         out_tmpl = os.path.join(temp_dir, f"{prefix}.%(ext)s")
@@ -669,9 +704,109 @@ def extract_youtube_id(url: str) -> str | None:
             return m.group(1)
     return None
 
+def search_youtube_rapidapi(query: str, limit: int = 5) -> list[dict[str, str]]:
+    """
+    Auto Song Search Engine:
+    Searches YouTube songs/videos via RapidAPI (youtube-media-downloader.p.rapidapi.com)
+    with seamless fallback to yt-dlp flat search.
+    """
+    results: list[dict[str, str]] = []
+    clean_q = query.strip()
+    if not clean_q:
+        return results
+
+    # Strategy 1: RapidAPI YouTube Media Downloader Search
+    if RAPIDAPI_KEY:
+        try:
+            headers = {
+                "x-rapidapi-key": RAPIDAPI_KEY,
+                "x-rapidapi-host": RAPIDAPI_YT_HOST
+            }
+            api_url = f"https://{RAPIDAPI_YT_HOST}/v2/search/videos?keyword={quote(clean_q)}"
+            resp = HTTP_SESSION.get(api_url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                items = data.get("items", [])
+                for it in items[:limit]:
+                    vid_id = it.get("id")
+                    title = it.get("title")
+                    duration = it.get("lengthText") or it.get("duration") or ""
+                    if vid_id and title:
+                        results.append({
+                            "id": str(vid_id),
+                            "title": str(title),
+                            "duration": str(duration)
+                        })
+                if results:
+                    return results
+        except Exception as e:
+            log_error(f"RapidAPI YouTube search failed: {e}")
+
+    # Strategy 2: yt-dlp flat search fallback
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'extract_flat': True,
+            'skip_download': True,
+            'extractor_args': {'youtube': {'player_client': ['android']}},
+            'socket_timeout': 15,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch{limit}:{clean_q}", download=False)
+            if info and "entries" in info:
+                for entry in info["entries"]:
+                    if entry and entry.get("id"):
+                        dur_sec = entry.get("duration") or 0
+                        dur_str = f"{int(dur_sec//60)}:{int(dur_sec%60):02d}" if dur_sec else ""
+                        results.append({
+                            "id": str(entry.get("id")),
+                            "title": str(entry.get("title") or "YouTube Song"),
+                            "duration": dur_str
+                        })
+    except Exception as yt_err:
+        log_error(f"yt-dlp flat search fallback failed: {yt_err}")
+
+    return results
+
+def download_youtube_rapidapi(video_id: str, extract_audio: bool = False) -> tuple[str, str | None]:
+    """Downloads YouTube media using RapidAPI youtube-media-downloader."""
+    if not RAPIDAPI_KEY or not video_id:
+        return "YouTube Media", None
+    try:
+        headers = {
+            "x-rapidapi-key": RAPIDAPI_KEY,
+            "x-rapidapi-host": RAPIDAPI_YT_HOST
+        }
+        api_url = f"https://{RAPIDAPI_YT_HOST}/v2/video/details?videoId={video_id}"
+        resp = HTTP_SESSION.get(api_url, headers=headers, timeout=12)
+        if resp.status_code == 200:
+            data = resp.json()
+            title = data.get("title") or "YouTube Media"
+            if extract_audio:
+                audios = data.get("audios", {}).get("items", [])
+                for a in audios:
+                    stream_url = a.get("url")
+                    if stream_url:
+                        ext = f".{a.get('extension')}" if a.get("extension") else ".m4a"
+                        tmp_file = download_to_temp_file(stream_url, suffix=ext, referer="https://www.youtube.com/")
+                        if tmp_file and os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 1000:
+                            return title, tmp_file
+            else:
+                videos = data.get("videos", {}).get("items", [])
+                combined = [v for v in videos if v.get("hasAudio") and v.get("url")]
+                if combined:
+                    stream_url = combined[0].get("url")
+                    tmp_file = download_to_temp_file(stream_url, suffix=".mp4", referer="https://www.youtube.com/")
+                    if tmp_file and os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 1000:
+                        return title, tmp_file
+    except Exception as e:
+        log_error(f"RapidAPI YouTube details failed: {e}")
+    return "YouTube Media", None
+
 def download_youtube(url: str, extract_audio: bool = False) -> tuple[str, str | None]:
     """
     Enterprise-Grade YouTube Downloader:
+    0. RapidAPI YouTube Media Downloader (High-Speed Direct Google CDN)
     1. Normalizes YouTube links to canonical URLs (strips tracking query params like ?si=...).
     2. Client player spoofing ('android', 'ios', 'mweb') to bypass YouTube datacenter bot detection.
     3. NEVER filters DASH/HLS so all modern 1080p/720p/audio streams are discoverable.
@@ -686,6 +821,12 @@ def download_youtube(url: str, extract_audio: bool = False) -> tuple[str, str | 
     temp_dir = tempfile.gettempdir()
     prefix = f"yt_{uuid.uuid4().hex[:8]}"
     default_title = "YouTube Media"
+
+    # Strategy 0: RapidAPI YouTube Media Downloader (Fastest)
+    if video_id and RAPIDAPI_KEY:
+        rap_title, rap_file = download_youtube_rapidapi(video_id, extract_audio=extract_audio)
+        if rap_file and os.path.exists(rap_file) and os.path.getsize(rap_file) > 1000:
+            return rap_title, rap_file
 
     # Define client player profiles in order of highest success rate on cloud/datacenter IPs
     player_client_sets = [
@@ -1046,12 +1187,12 @@ def prompt_media_choice(
     url: str,
     platform: str
 ) -> None:
-    """Sends an inline keyboard asking user to choose Video (HD) or Audio (MP3)."""
+    """Sends an ultra-sleek inline keyboard asking user to choose Video (HD) or Audio (MP3)."""
     short_id = register_download_task(url, platform, message.chat.id)
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    btn_video = types.InlineKeyboardButton("🎬 Video (HD)", callback_data=f"dl:v:{short_id}")
-    btn_audio = types.InlineKeyboardButton("🎵 Audio (MP3)", callback_data=f"dl:a:{short_id}")
+    btn_video = types.InlineKeyboardButton("🎬 Video (HD 1080p)", callback_data=f"dl:v:{short_id}")
+    btn_audio = types.InlineKeyboardButton("🎵 Audio (MP3 320k)", callback_data=f"dl:a:{short_id}")
     markup.add(btn_video, btn_audio)
 
     platform_icons = {
@@ -1073,6 +1214,72 @@ def prompt_media_choice(
     )
 
     safe_reply(bot_instance, message, prompt_text, parse_mode="HTML", reply_markup=markup)
+
+def process_song_download(
+    bot_instance: telebot.TeleBot,
+    chat_id: int,
+    status_msg_id: int,
+    url: str
+) -> None:
+    """Downloads requested YouTube song and sends as Telegram Audio track."""
+    local_file = None
+    try:
+        title, file_path = download_youtube(url, extract_audio=True)
+        if not file_path or not os.path.exists(file_path):
+            bot_instance.edit_message_text(
+                "❌ <b>Song Download Failed:</b> Unable to fetch the audio track from YouTube.",
+                chat_id,
+                status_msg_id,
+                parse_mode="HTML"
+            )
+            return
+
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        if file_size_mb > 49.9:
+            bot_instance.edit_message_text(
+                f"⚠️ <b>Audio Exceeds Limit:</b> {file_size_mb:.1f} MB exceeds Telegram's 50MB bot limit.",
+                chat_id,
+                status_msg_id,
+                parse_mode="HTML"
+            )
+            return
+
+        local_file = file_path
+        caption_text = (
+            f"🎵 <b>{escape(title[:200])}</b>\n\n"
+            f"⚡ <i>Downloaded via 7G Master Bot</i> ✨"
+        )
+        with open(local_file, "rb") as f:
+            bot_instance.send_audio(
+                chat_id,
+                f,
+                title=title[:60],
+                caption=caption_text,
+                parse_mode="HTML",
+                timeout=180
+            )
+
+        try:
+            bot_instance.delete_message(chat_id, status_msg_id)
+        except Exception:
+            pass
+    except Exception as e:
+        log_error(f"Error in process_song_download: {e}")
+        try:
+            bot_instance.edit_message_text(
+                f"❌ <b>Download Error:</b> <i>{escape(str(e))}</i>",
+                chat_id,
+                status_msg_id,
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    finally:
+        if local_file and os.path.exists(local_file):
+            try:
+                os.remove(local_file)
+            except Exception:
+                pass
 
 def process_download_execution(
     bot_instance: telebot.TeleBot,
@@ -1247,6 +1454,51 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
                 )
             return
 
+        # Song download callback: song:<video_id>
+        if data.startswith("song:"):
+            video_id = data.split(":", 1)[1]
+            try:
+                bot_instance.answer_callback_query(call.id, text="🎵 Downloading song audio...")
+            except Exception:
+                pass
+            status_msg = bot_instance.send_message(
+                call.message.chat.id,
+                "⏳ <b>Downloading MP3 Audio...</b>\n⚡ <i>Please hold on a moment!</i>",
+                parse_mode="HTML"
+            )
+            target_url = f"https://www.youtube.com/watch?v={video_id}"
+            EXECUTOR.submit(
+                process_song_download,
+                bot_instance,
+                call.message.chat.id,
+                status_msg.message_id,
+                target_url
+            )
+            return
+
+        # AI prompt fallback callback: ask_ai:<hash_id>
+        if data.startswith("ask_ai:"):
+            hash_id = data.split(":", 1)[1]
+            prompt = AI_QUERY_CACHE.get(hash_id, "")
+            if prompt:
+                try:
+                    bot_instance.answer_callback_query(call.id, text="💭 Asking Meta AI...")
+                except Exception:
+                    pass
+                status_msg = bot_instance.send_message(
+                    call.message.chat.id,
+                    "💭 <i>Thinking...</i>",
+                    parse_mode="HTML"
+                )
+                EXECUTOR.submit(
+                    send_ai_response,
+                    bot_instance,
+                    call.message.chat.id,
+                    prompt,
+                    status_msg.message_id
+                )
+            return
+
         # Admin Clone Bot Actions: clone:stop:<bot_id>, clone:start:<bot_id>, clone:del:<bot_id>
         if data.startswith("clone:"):
             if call.from_user.id != ADMIN_ID:
@@ -1317,12 +1569,12 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
 
         keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
         btn_stats = types.KeyboardButton("📊 My Stats")
-        btn_refer = types.KeyboardButton("🔗 Referral Link")
+        btn_refer = types.KeyboardButton("🚀 Share Trendy")
         btn_create = types.KeyboardButton("🤖 Create Own Bot")
         keyboard.row(btn_stats, btn_refer)
         keyboard.row(btn_create)
 
-        # Ultra-Professional Welcome Message without "Welcome to 7G Bot Master"
+        # Ultra-Professional Welcome Message
         welcome_text = (
             "⚡ <b>All-in-One Multi-Media Downloader & AI Assistant</b> ✨\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1331,12 +1583,15 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             "• 🎵 <b>TikTok:</b> Ultra HD Video & MP3 Audio\n"
             "• 🔴 <b>YouTube:</b> HD 1080p Videos & Shorts + MP3 Audio\n"
             "• 🔵 <b>Facebook:</b> HD Videos & Reels + MP3 Audio\n\n"
+            "🎧 <b>Auto Song Search & Audio Downloader:</b>\n"
+            "• <i>Just type any song or artist name (e.g. \"Shape of You\") to get instant MP3 results!</i>\n\n"
             "🤖 <b>Smart Features:</b>\n"
             "• 💡 <b>Meta AI Assistant:</b> Chat directly or use <code>/ai &lt;query&gt;</code>\n"
             "• 🎨 <b>AI Image Generator:</b> Create photos with <code>/image &lt;prompt&gt;</code>\n"
+            "• 🚀 <b>Share Trendy:</b> Share with friends and earn +10 reward points!\n"
             "• 🤖 <b>Host Your Own Bot:</b> Tap <i>'Create Own Bot'</i> for 100% FREE cloning!\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "👉 <i>Just paste any link below or choose an option to get started!</i>"
+            "👉 <i>Paste any link or type a song name to begin!</i>"
         )
         safe_reply(bot_instance, message, welcome_text, parse_mode="HTML", reply_markup=keyboard)
 
@@ -1805,15 +2060,17 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             handle_my_stats(message)
             return
 
-        elif text == "🔗 Referral Link":
+        elif text == "🚀 Share Trendy" or text == "🔗 Referral Link" or text == "Share Trendy":
             try:
                 me = bot_instance.get_me()
                 ref_link = f"https://t.me/{me.username}?start={message.chat.id}"
                 safe_reply(
                     bot_instance,
                     message,
-                    f"👥 <b>Your Personal Referral Link:</b>\n<code>{ref_link}</code>\n\n"
-                    f"<i>Share this link with your friends to invite them! Each friend invited earns you reward points.</i> ✨",
+                    f"🚀 <b>Share Trendy Bot & Earn Rewards!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🔗 <b>Your Exclusive Invite Link:</b>\n<code>{ref_link}</code>\n\n"
+                    f"<i>Share this link with your friends to invite them! Each friend invited earns you +10 reward points.</i> ✨",
                     parse_mode="HTML"
                 )
             except Exception:
@@ -1903,6 +2160,29 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             clean_link = url_match.group(0) if url_match else text
             track_user_activity(message.from_user, "Facebook Download", clean_link)
             prompt_media_choice(bot_instance, message, clean_link, "facebook")
+            return
+
+        # 5. Auto Song Search via RapidAPI YouTube (No Command Required)
+        track_user_activity(message.from_user, "Song Search / AI Query", text)
+        search_results = search_youtube_rapidapi(text, limit=4)
+        if search_results:
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            for idx, item in enumerate(search_results, start=1):
+                dur_label = f" [{item['duration']}]" if item.get("duration") else ""
+                btn_title = f"🎵 {idx}. {item['title'][:32]}{dur_label}"
+                markup.add(types.InlineKeyboardButton(btn_title, callback_data=f"song:{item['id']}"))
+
+            q_hash = uuid.uuid4().hex[:8]
+            AI_QUERY_CACHE[q_hash] = text
+            markup.add(types.InlineKeyboardButton(f"💬 Ask Meta AI: \"{text[:25]}...\"", callback_data=f"ask_ai:{q_hash}"))
+
+            prompt_msg = (
+                f"🎧 <b>YouTube Song & Audio Search:</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔍 <b>Query:</b> <i>\"{escape(text)}\"</i>\n\n"
+                f"👇 <i>Tap any song below to instantly download MP3 audio:</i>"
+            )
+            safe_reply(bot_instance, message, prompt_msg, parse_mode="HTML", reply_markup=markup)
             return
 
         # General Text -> AI Chat Assistant Fallback
