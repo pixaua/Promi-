@@ -405,39 +405,57 @@ def send_admin_alert(
 def download_to_temp_file(
     media_url: str,
     suffix: str = ".mp4",
-    referer: str = "https://www.google.com/"
+    referer: str | None = None
 ) -> str | None:
-    try:
-        headers = {
-            "User-Agent": USER_AGENT,
-            "Referer": referer,
-            "Accept": "*/*",
-        }
-        with HTTP_SESSION.get(media_url, headers=headers, stream=True, timeout=90) as resp:
-            resp.raise_for_status()
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                total_bytes = 0
-                for chunk in resp.iter_content(chunk_size=512 * 1024):
-                    if chunk:
+    """Safely downloads media streams to a temporary file under Telegram's 50MB limit."""
+    headers_list = []
+    if referer:
+        headers_list.append({"User-Agent": USER_AGENT, "Referer": referer, "Accept": "*/*"})
+    headers_list.append({"User-Agent": USER_AGENT, "Accept": "*/*"})
+
+    for headers in headers_list:
+        tmp_path = None
+        try:
+            req = Request(media_url, headers=headers)
+            with urlopen(req, timeout=40) as resp:
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                    tmp_path = tmp.name
+                    total_bytes = 0
+                    while True:
+                        chunk = resp.read(256 * 1024)
+                        if not chunk:
+                            break
                         tmp.write(chunk)
                         total_bytes += len(chunk)
                         if total_bytes > 49.5 * 1024 * 1024:
                             log_error("Downloaded file exceeded Telegram 50MB limit.")
                             break
-                tmp_path = tmp.name
 
-        if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 1000:
-            return tmp_path
-        else:
-            if os.path.exists(tmp_path):
+            if tmp_path and os.path.exists(tmp_path):
+                file_sz = os.path.getsize(tmp_path)
+                if total_bytes > 49.5 * 1024 * 1024:
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                    return None
+                if file_sz > 1000:
+                    return tmp_path
+                else:
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+        except Exception as e:
+            if tmp_path and os.path.exists(tmp_path):
                 try:
                     os.remove(tmp_path)
                 except Exception:
                     pass
-            return None
-    except Exception as e:
-        log_error(f"Download to temp file failed: {e}")
-        return None
+            log_error(f"Download to temp file attempt error: {e}")
+            continue
+
+    return None
 
 # ----------------- INSTAGRAM DOWNLOADER (GUARANTEED AUDIO) ----------------- #
 
@@ -465,14 +483,16 @@ def download_instagram(url: str, extract_audio: bool = False) -> tuple[str, str 
                 "User-Agent": USER_AGENT,
                 "Accept": "application/json"
             }
-            resp = HTTP_SESSION.post(
+            req = Request(
                 f"https://{RAPIDAPI_IG_HOST}/v1/social/autolink",
-                json={"url": clean_url},
+                data=json.dumps({"url": clean_url}).encode("utf-8"),
                 headers=rapid_headers,
-                timeout=12
+                method="POST"
             )
-            if resp.status_code == 200:
-                data = resp.json()
+            with urlopen(req, timeout=12) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            if isinstance(data, dict):
                 medias = data.get("medias", []) or data.get("media", []) or data.get("data", [])
                 title = data.get("title") or "Instagram Media"
                 if isinstance(medias, list) and medias:
@@ -493,7 +513,7 @@ def download_instagram(url: str, extract_audio: bool = False) -> tuple[str, str 
 
                     if best_m:
                         suffix = ".m4a" if extract_audio else ".mp4"
-                        tmp_file = download_to_temp_file(best_m, suffix=suffix, referer="https://www.instagram.com/")
+                        tmp_file = download_to_temp_file(best_m, suffix=suffix)
                         if tmp_file and os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 1000:
                             return title, tmp_file
         except Exception as rapid_ig_err:
@@ -508,7 +528,7 @@ def download_instagram(url: str, extract_audio: bool = False) -> tuple[str, str 
                 'outtmpl': out_tmpl,
                 'quiet': True,
                 'no_warnings': True,
-                'socket_timeout': 30,
+                'socket_timeout': 25,
                 'nocheckcertificate': True,
                 'source_address': '0.0.0.0',
                 'cachedir': False,
@@ -519,7 +539,7 @@ def download_instagram(url: str, extract_audio: bool = False) -> tuple[str, str 
                 'outtmpl': out_tmpl,
                 'quiet': True,
                 'no_warnings': True,
-                'socket_timeout': 30,
+                'socket_timeout': 25,
                 'nocheckcertificate': True,
                 'source_address': '0.0.0.0',
                 'cachedir': False,
@@ -549,48 +569,15 @@ def download_instagram(url: str, extract_audio: bool = False) -> tuple[str, str 
             caption = post.caption or "Instagram Media"
             if getattr(post, "is_video", False) and getattr(post, "video_url", None):
                 suffix = ".m4a" if extract_audio else ".mp4"
-                tmp_file = download_to_temp_file(post.video_url, suffix=suffix, referer="https://www.instagram.com/")
+                tmp_file = download_to_temp_file(post.video_url, suffix=suffix)
                 if tmp_file:
                     return caption, tmp_file
-                return caption, post.video_url
             elif getattr(post, "url", None) and not extract_audio:
-                tmp_file = download_to_temp_file(post.url, suffix=".jpg", referer="https://www.instagram.com/")
+                tmp_file = download_to_temp_file(post.url, suffix=".jpg")
                 if tmp_file:
                     return caption, tmp_file
-                return caption, post.url
         except Exception as inst_err:
             log_error(f"Instaloader Instagram fallback failed: {inst_err}")
-
-    # Method 3: SaveInsta / Snapinsta Web Resolver
-    try:
-        headers = {
-            'User-Agent': USER_AGENT,
-            'Referer': 'https://saveinsta.app/',
-            'Accept': 'application/json, text/javascript, */*; q=0.01',
-        }
-        endpoints = [
-            "https://v3.saveinsta.app/api/ajaxSearch",
-            "https://saveinsta.io/api/ajaxSearch",
-            "https://snapinsta.to/api/ajaxSearch"
-        ]
-        for ep in endpoints:
-            try:
-                res = HTTP_SESSION.post(ep, data={"q": clean_url, "t": "media", "lang": "en"}, headers=headers, timeout=12)
-                if res.status_code == 200:
-                    resp_json = res.json()
-                    html_content = resp_json.get("data", "")
-                    m_url = re.search(r'href="([^"]+)"[^>]*class="[^"]*btn-download[^"]*"', html_content) or re.search(r'href="([^"]+)"[^>]*download', html_content)
-                    if m_url:
-                        video_link = html.unescape(m_url.group(1))
-                        suffix = ".m4a" if extract_audio else ".mp4"
-                        tmp_file = download_to_temp_file(video_link, suffix=suffix, referer="https://saveinsta.app/")
-                        if tmp_file:
-                            return "Instagram Video", tmp_file
-                        return "Instagram Video", video_link
-            except Exception:
-                pass
-    except Exception as save_err:
-        log_error(f"SaveInsta resolver failed: {save_err}")
 
     return "Instagram Media", None
 
@@ -601,53 +588,106 @@ def download_tiktok(url: str, extract_audio: bool = False) -> tuple[str, str | N
     m = re.search(r'https?://(?:www\.|vt\.|vm\.|m\.)?tiktok\.com/[^\s\?]+', clean_url)
     base_clean_url = m.group(0) if m else clean_url.split("?")[0]
 
+    # Resolve short-links (vt.tiktok.com, vm.tiktok.com)
     if "vt.tiktok.com" in clean_url or "vm.tiktok.com" in clean_url:
         try:
-            head_resp = HTTP_SESSION.head(clean_url, allow_redirects=True, timeout=10)
-            if head_resp.url and "tiktok.com" in head_resp.url:
-                clean_url = head_resp.url
-                m2 = re.search(r'https?://(?:www\.|vt\.|vm\.|m\.)?tiktok\.com/[^\s\?]+', clean_url)
-                base_clean_url = m2.group(0) if m2 else clean_url.split("?")[0]
+            head_req = Request(clean_url, headers={"User-Agent": USER_AGENT})
+            with urlopen(head_req, timeout=10) as head_resp:
+                if head_resp.url and "tiktok.com" in head_resp.url:
+                    clean_url = head_resp.url
+                    m2 = re.search(r'https?://(?:www\.|vt\.|vm\.|m\.)?tiktok\.com/[^\s\?]+', clean_url)
+                    base_clean_url = m2.group(0) if m2 else clean_url.split("?")[0]
         except Exception:
             pass
 
-    # 1. TikWM API (HD / Normal / MP3)
+    # Tier 1: TikWM Direct API (High-speed, No Watermark, Studio Audio)
     tikwm_endpoints = ["https://www.tikwm.com/api/", "https://tikwm.com/api/"]
     for endpoint in tikwm_endpoints:
         for target_u in [clean_url, base_clean_url]:
             try:
-                res = HTTP_SESSION.post(
+                post_data = urlencode({"url": target_u, "hd": 1}).encode("utf-8")
+                req = Request(
                     endpoint,
-                    data={"url": target_u, "hd": 1},
-                    headers={"Accept": "application/json"},
-                    timeout=15
-                ).json()
-                if isinstance(res, dict) and res.get("code") == 0 and "data" in res:
-                    data = res["data"]
-                    title = str(data.get("title") or "TikTok Video")
+                    data=post_data,
+                    headers={"User-Agent": USER_AGENT, "Accept": "application/json"}
+                )
+                with urlopen(req, timeout=12) as res:
+                    res_json = json.loads(res.read().decode("utf-8"))
+
+                if isinstance(res_json, dict) and res_json.get("code") == 0 and "data" in res_json:
+                    data = res_json["data"]
+                    title = str(data.get("title") or "TikTok Video").strip()
 
                     if extract_audio:
-                        music_url = data.get("music") or data.get("play")
-                        if music_url:
-                            if music_url.startswith("/"):
-                                music_url = f"https://www.tikwm.com{music_url}"
-                            tmp_file = download_to_temp_file(music_url, suffix=".mp3", referer="https://www.tikwm.com/")
-                            if tmp_file:
-                                return title, tmp_file
-                            return title, music_url
+                        music_candidates = [data.get("music"), data.get("play")]
+                        for music_url in music_candidates:
+                            if music_url:
+                                if music_url.startswith("/"):
+                                    music_url = f"https://www.tikwm.com{music_url}"
+                                tmp_file = download_to_temp_file(music_url, suffix=".mp3")
+                                if tmp_file:
+                                    return title, tmp_file
                     else:
-                        video_url = data.get("hdplay") or data.get("play") or data.get("wmplay")
-                        if video_url:
-                            if video_url.startswith("/"):
-                                video_url = f"https://www.tikwm.com{video_url}"
-                            tmp_file = download_to_temp_file(video_url, suffix=".mp4", referer="https://www.tikwm.com/")
-                            if tmp_file:
-                                return title, tmp_file
-                            return title, video_url
+                        # Try HD play, then standard play, then wmplay
+                        video_candidates = [data.get("hdplay"), data.get("play"), data.get("wmplay")]
+                        for v_url in video_candidates:
+                            if v_url:
+                                if v_url.startswith("/"):
+                                    v_url = f"https://www.tikwm.com{v_url}"
+                                tmp_file = download_to_temp_file(v_url, suffix=".mp4")
+                                if tmp_file:
+                                    return title, tmp_file
             except Exception as e:
                 log_error(f"TikWM attempt error on {endpoint}: {e}")
 
-    # 2. yt-dlp Native Direct Downloader
+    # Tier 2: RapidAPI Social Download All-in-One (Backup High-Speed Pipeline)
+    if RAPIDAPI_KEY:
+        try:
+            rapid_headers = {
+                "x-rapidapi-key": RAPIDAPI_KEY,
+                "x-rapidapi-host": RAPIDAPI_IG_HOST,
+                "Content-Type": "application/json",
+                "User-Agent": USER_AGENT,
+                "Accept": "application/json"
+            }
+            req = Request(
+                f"https://{RAPIDAPI_IG_HOST}/v1/social/autolink",
+                data=json.dumps({"url": clean_url}).encode("utf-8"),
+                headers=rapid_headers,
+                method="POST"
+            )
+            with urlopen(req, timeout=12) as res:
+                rdata = json.loads(res.read().decode("utf-8"))
+
+            if isinstance(rdata, dict):
+                title = rdata.get("title") or "TikTok Media"
+                medias = rdata.get("medias", [])
+                if isinstance(medias, list) and medias:
+                    if extract_audio:
+                        for m_item in medias:
+                            if isinstance(m_item, dict) and (m_item.get("type") == "audio" or "audio" in m_item.get("quality", "").lower()):
+                                if m_item.get("url"):
+                                    tmp_f = download_to_temp_file(m_item.get("url"), suffix=".mp3")
+                                    if tmp_f:
+                                        return title, tmp_f
+                    else:
+                        best_vid = None
+                        for m_item in medias:
+                            if isinstance(m_item, dict) and m_item.get("type") == "video":
+                                q = m_item.get("quality", "").lower()
+                                if "hd" in q or "no_watermark" in q:
+                                    best_vid = m_item.get("url")
+                                    break
+                                elif not best_vid:
+                                    best_vid = m_item.get("url")
+                        if best_vid:
+                            tmp_f = download_to_temp_file(best_vid, suffix=".mp4")
+                            if tmp_f:
+                                return title, tmp_f
+        except Exception as rapid_tt_err:
+            log_error(f"RapidAPI TikTok fallback error: {rapid_tt_err}")
+
+    # Tier 3: yt-dlp Native Direct Downloader
     try:
         temp_dir = tempfile.gettempdir()
         prefix = f"tt_{uuid.uuid4().hex[:8]}"
@@ -658,17 +698,17 @@ def download_tiktok(url: str, extract_audio: bool = False) -> tuple[str, str | N
                 'outtmpl': out_tmpl,
                 'quiet': True,
                 'no_warnings': True,
-                'socket_timeout': 30,
+                'socket_timeout': 20,
                 'nocheckcertificate': True,
                 'source_address': '0.0.0.0',
             }
         else:
             ydl_opts = {
-                'format': 'best[ext=mp4]/best',
+                'format': 'best[ext=mp4]/best/bestvideo+bestaudio',
                 'outtmpl': out_tmpl,
                 'quiet': True,
                 'no_warnings': True,
-                'socket_timeout': 30,
+                'socket_timeout': 20,
                 'nocheckcertificate': True,
                 'source_address': '0.0.0.0',
             }
@@ -702,13 +742,17 @@ def extract_youtube_id(url: str) -> str | None:
             return m.group(1)
     return None
 
-def download_youtube_loader_stream(canonical_url: str, extract_audio: bool = False) -> tuple[str, str | None]:
+def download_youtube_loader_stream(canonical_url: str, extract_audio: bool = False, format_override: str | None = None) -> tuple[str, str | None]:
     """
     High-Speed Cloud Resolver:
     Converts and downloads YouTube media via independent CDN pipelines.
     Completely bypasses YouTube datacenter IP-locks and Google 403 Forbidden!
     """
-    fmt = "mp3" if extract_audio else "720"
+    if format_override:
+        fmt = format_override
+    else:
+        fmt = "mp3" if extract_audio else "720"
+
     init_url = f"https://loader.to/ajax/download.php?format={fmt}&url={quote(canonical_url)}"
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
 
@@ -721,25 +765,21 @@ def download_youtube_loader_stream(canonical_url: str, extract_audio: bool = Fal
             if not job_id:
                 return title, None
 
-        for _ in range(12):
-            time.sleep(1.8)
+        # Poll up to 18 iterations (~27 seconds)
+        for _ in range(18):
+            time.sleep(1.5)
             prog_url = f"https://loader.to/ajax/progress.php?id={job_id}"
             preq = Request(prog_url, headers=headers)
             with urlopen(preq, timeout=10) as pres:
                 pdata = json.loads(pres.read().decode("utf-8"))
                 download_url = pdata.get("download_url")
-                if download_url:
-                    suffix = ".mp3" if extract_audio else ".mp4"
-                    tmp_f = download_to_temp_file(download_url, suffix=suffix, referer="https://loader.to/")
-                    if tmp_f and os.path.exists(tmp_f) and os.path.getsize(tmp_f) > 1000:
-                        return title, tmp_f
-                if pdata.get("success") == 1 and download_url:
+                if download_url and (pdata.get("success") == 1 or pdata.get("progress", 0) >= 1000 or pdata.get("download_url")):
                     suffix = ".mp3" if extract_audio else ".mp4"
                     tmp_f = download_to_temp_file(download_url, suffix=suffix, referer="https://loader.to/")
                     if tmp_f and os.path.exists(tmp_f) and os.path.getsize(tmp_f) > 1000:
                         return title, tmp_f
     except Exception as loader_err:
-        log_error(f"Loader.to resolver error: {loader_err}")
+        log_error(f"Loader.to resolver error ({fmt}): {loader_err}")
 
     return "YouTube Media", None
 
@@ -747,8 +787,8 @@ def download_youtube(url: str, extract_audio: bool = False) -> tuple[str, str | 
     """
     Multi-Tier YouTube Downloader:
     Tier 1: Cloud CDN Web Resolver (100% bypasses Google datacenter IP-lock)
-    Tier 2: Native yt-dlp with mobile client spoofing ('mweb', 'android', 'tv_embedded') + IPv4 socket
-    Tier 3: Multi-Instance Public Invidious stream resolver
+    Tier 2: Fast yt-dlp mobile client spoofing ('android') with progressive stream
+    Tier 3: Public Invidious stream resolver
     """
     clean_url = url.strip()
     vid_id = extract_youtube_id(clean_url)
@@ -758,78 +798,58 @@ def download_youtube(url: str, extract_audio: bool = False) -> tuple[str, str | 
     prefix = f"yt_{uuid.uuid4().hex[:8]}"
     default_title = "YouTube Media"
 
-    # Tier 1: Cloud CDN Web Resolver (Most reliable on Render & VPS datacenters)
-    t1_title, t1_file = download_youtube_loader_stream(target_url, extract_audio=extract_audio)
-    if t1_file and os.path.exists(t1_file) and os.path.getsize(t1_file) > 1000:
-        return t1_title, t1_file
-
-    # Tier 2: yt-dlp Native Download with Mobile Client Spoofing
-    cookie_file = None
-    if os.path.exists("cookies.txt"):
-        cookie_file = os.path.abspath("cookies.txt")
-    elif os.getenv("YT_COOKIES"):
-        try:
-            cf = os.path.join(temp_dir, f"yt_cookies_{uuid.uuid4().hex[:6]}.txt")
-            with open(cf, "w", encoding="utf-8") as f:
-                f.write(os.getenv("YT_COOKIES", ""))
-            cookie_file = cf
-        except Exception:
-            pass
-
-    player_client_sets = [
-        ['mweb'],
-        ['android'],
-        ['ios'],
-        ['tv_embedded'],
-        ['web']
-    ]
-
+    # Tier 1: Cloud CDN Web Resolver (Preferred on Render & VPS datacenters)
     if extract_audio:
-        format_spec = "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/140/ba/b"
+        t1_title, t1_file = download_youtube_loader_stream(target_url, extract_audio=True)
+        if t1_file and os.path.exists(t1_file) and os.path.getsize(t1_file) > 1000:
+            return t1_title, t1_file
     else:
-        format_spec = (
-            "best[ext=mp4][height<=720][vcodec!=none][acodec!=none]/"
-            "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/"
-            "22/18/"
-            "best[height<=720]/best"
-        )
+        # First attempt 720p HD
+        t1_title, t1_file = download_youtube_loader_stream(target_url, extract_audio=False, format_override="720")
+        if t1_file and os.path.exists(t1_file) and os.path.getsize(t1_file) > 1000:
+            return t1_title, t1_file
+        # If 720 timed out or was too large (>50MB), quickly fallback to 360p
+        t1_title_360, t1_file_360 = download_youtube_loader_stream(target_url, extract_audio=False, format_override="360")
+        if t1_file_360 and os.path.exists(t1_file_360) and os.path.getsize(t1_file_360) > 1000:
+            return t1_title_360, t1_file_360
 
-    for client_list in player_client_sets:
-        client_name = client_list[0] if client_list else "default"
-        out_tmpl = os.path.join(temp_dir, f"{prefix}_{client_name}.%(ext)s")
+    # Tier 2: yt-dlp Native Download with Mobile Client Spoofing (Fast single attempt)
+    try:
+        out_tmpl = os.path.join(temp_dir, f"{prefix}.%(ext)s")
+        if extract_audio:
+            format_spec = "140/bestaudio[ext=m4a]/bestaudio/best"
+        else:
+            format_spec = "22/18/best[height<=720]/best"
 
         ydl_opts: dict[str, Any] = {
             'format': format_spec,
             'outtmpl': out_tmpl,
             'quiet': True,
             'no_warnings': True,
-            'socket_timeout': 30,
+            'socket_timeout': 15,
             'nocheckcertificate': True,
             'source_address': '0.0.0.0',
             'cachedir': False,
             'ignoreerrors': True,
+            'extractor_args': {'youtube': {'player_client': ['android']}}
         }
-        if cookie_file and os.path.exists(cookie_file):
-            ydl_opts['cookiefile'] = cookie_file
-        if client_list:
-            ydl_opts['extractor_args'] = {'youtube': {'player_client': client_list}}
+        if os.path.exists("cookies.txt"):
+            ydl_opts['cookiefile'] = os.path.abspath("cookies.txt")
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(target_url, download=True)
-                if info:
-                    title = info.get("title") or default_title
-                    candidate_path = ydl.prepare_filename(info)
-                    if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 1000:
-                        return title, candidate_path
-                    for f in os.listdir(temp_dir):
-                        if f.startswith(f"{prefix}_{client_name}"):
-                            f_path = os.path.join(temp_dir, f)
-                            if os.path.getsize(f_path) > 1000:
-                                return title, f_path
-        except Exception as dl_err:
-            log_error(f"yt-dlp YouTube {client_list} failed: {dl_err}")
-            continue
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(target_url, download=True)
+            if info:
+                title = info.get("title") or default_title
+                candidate_path = ydl.prepare_filename(info)
+                if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 1000:
+                    return title, candidate_path
+                for f in os.listdir(temp_dir):
+                    if f.startswith(prefix):
+                        f_path = os.path.join(temp_dir, f)
+                        if os.path.getsize(f_path) > 1000:
+                            return title, f_path
+    except Exception as ydl_err:
+        log_error(f"yt-dlp YouTube android client failed: {ydl_err}")
 
     # Tier 3: Invidious Resolver
     if vid_id:
@@ -842,9 +862,11 @@ def download_youtube(url: str, extract_audio: bool = False) -> tuple[str, str | 
         for inv_host in invidious_instances:
             try:
                 api_url = f"{inv_host}/api/v1/videos/{vid_id}"
-                resp = HTTP_SESSION.get(api_url, timeout=10, headers={"User-Agent": USER_AGENT})
-                if resp.status_code == 200:
-                    data = resp.json()
+                req = Request(api_url, headers={"User-Agent": USER_AGENT})
+                with urlopen(req, timeout=8) as res:
+                    data = json.loads(res.read().decode("utf-8"))
+
+                if isinstance(data, dict):
                     title = data.get("title") or default_title
                     if extract_audio:
                         for af in data.get("adaptiveFormats", []):
