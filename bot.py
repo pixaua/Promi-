@@ -2,7 +2,7 @@
 =============================================================================
 7G ULTIMATE TELEGRAM MASTER BOT (ENTERPRISE PRODUCTION EDITION)
 =============================================================================
-Primary Token: 7678905793:AAHvRXVmRSF1UlC_T5Gn3K0j4n2PeZB8fmA
+Primary Token: 7678905793:AAHu3CkPG-GSf42SGLf9PM5hccL8HIIsftY
 Master Admin ID: 6162953772
 RapidAPI Key: 8ab82c2a2fmshd7c1d7c96acc63fp170cfajsnd4d72661f86a
 Meta AI API Key: nxt_3a454c41e6a84aeead28d1fb4aec87a4
@@ -67,7 +67,7 @@ def log_error(message: str, *args: Any) -> None:
     sys.stderr.flush()
 
 # ----------------- CONFIGURATION ----------------- #
-MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAHvRXVmRSF1UlC_T5Gn3K0j4n2PeZB8fmA").strip()
+MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAHu3CkPG-GSf42SGLf9PM5hccL8HIIsftY").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6162953772"))
 
 # RapidAPI Integrations (Instagram Guaranteed Audio Autolink & Media Downloader)
@@ -405,61 +405,81 @@ def send_admin_alert(
 def download_to_temp_file(
     media_url: str,
     suffix: str = ".mp4",
-    referer: str | None = None
+    referer: str | None = None,
+    progress_callback: Callable[[int], None] | None = None
 ) -> str | None:
-    """Safely downloads media streams to a temporary file under Telegram's 50MB limit."""
-    headers_list = []
+    """Safely downloads media streams to a temporary file under Telegram's 50MB limit with live percentage updates."""
+    headers = {"User-Agent": USER_AGENT, "Accept": "*/*"}
     if referer:
-        headers_list.append({"User-Agent": USER_AGENT, "Referer": referer, "Accept": "*/*"})
-    headers_list.append({"User-Agent": USER_AGENT, "Accept": "*/*"})
+        headers["Referer"] = referer
 
-    for headers in headers_list:
-        tmp_path = None
-        try:
-            req = Request(media_url, headers=headers)
-            with urlopen(req, timeout=40) as resp:
-                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                    tmp_path = tmp.name
-                    total_bytes = 0
-                    while True:
-                        chunk = resp.read(256 * 1024)
-                        if not chunk:
-                            break
-                        tmp.write(chunk)
-                        total_bytes += len(chunk)
-                        if total_bytes > 49.5 * 1024 * 1024:
-                            log_error("Downloaded file exceeded Telegram 50MB limit.")
-                            break
+    tmp_path = None
+    try:
+        req = Request(media_url, headers=headers)
+        with urlopen(req, timeout=120) as resp:
+            content_length = resp.headers.get("Content-Length")
+            total_expected = int(content_length) if content_length and content_length.isdigit() else 0
 
-            if tmp_path and os.path.exists(tmp_path):
-                file_sz = os.path.getsize(tmp_path)
-                if total_bytes > 49.5 * 1024 * 1024:
-                    try:
-                        os.remove(tmp_path)
-                    except Exception:
-                        pass
-                    return None
-                if file_sz > 1000:
-                    return tmp_path
-                else:
-                    try:
-                        os.remove(tmp_path)
-                    except Exception:
-                        pass
-        except Exception as e:
-            if tmp_path and os.path.exists(tmp_path):
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp_path = tmp.name
+                total_bytes = 0
+                last_pct_reported = 0
+                while True:
+                    chunk = resp.read(256 * 1024)
+                    if not chunk:
+                        break
+                    tmp.write(chunk)
+                    total_bytes += len(chunk)
+                    if total_bytes > 49.5 * 1024 * 1024:
+                        log_error("Downloaded file exceeded Telegram 50MB limit.")
+                        break
+
+                    if progress_callback:
+                        if total_expected > 0:
+                            pct = min(95, int(15 + (total_bytes / total_expected) * 80))
+                        else:
+                            mb = total_bytes / (1024 * 1024)
+                            pct = min(95, int(15 + mb * 6))
+                        if pct >= last_pct_reported + 8:
+                            last_pct_reported = pct
+                            try:
+                                progress_callback(pct)
+                            except Exception:
+                                pass
+
+        if tmp_path and os.path.exists(tmp_path):
+            file_sz = os.path.getsize(tmp_path)
+            if total_bytes > 49.5 * 1024 * 1024:
                 try:
                     os.remove(tmp_path)
                 except Exception:
                     pass
-            log_error(f"Download to temp file attempt error: {e}")
-            continue
+                return None
+            if file_sz > 1000:
+                if progress_callback:
+                    try:
+                        progress_callback(98)
+                    except Exception:
+                        pass
+                return tmp_path
+            else:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+    except Exception as e:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        log_error(f"Download to temp file error: {e}")
 
     return None
 
 # ----------------- INSTAGRAM DOWNLOADER (GUARANTEED AUDIO) ----------------- #
 
-def download_instagram(url: str, extract_audio: bool = False) -> tuple[str, str | None]:
+def download_instagram(url: str, extract_audio: bool = False, progress_callback: Callable[[int], None] | None = None) -> tuple[str, str | None]:
     clean_url = url.strip()
     m = re.search(r"https?://(?:www\.)?instagram\.com/(?:reel|p|tv)/[A-Za-z0-9_-]+", clean_url)
     if m:
@@ -513,7 +533,7 @@ def download_instagram(url: str, extract_audio: bool = False) -> tuple[str, str 
 
                     if best_m:
                         suffix = ".m4a" if extract_audio else ".mp4"
-                        tmp_file = download_to_temp_file(best_m, suffix=suffix)
+                        tmp_file = download_to_temp_file(best_m, suffix=suffix, progress_callback=progress_callback)
                         if tmp_file and os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 1000:
                             return title, tmp_file
         except Exception as rapid_ig_err:
@@ -569,11 +589,11 @@ def download_instagram(url: str, extract_audio: bool = False) -> tuple[str, str 
             caption = post.caption or "Instagram Media"
             if getattr(post, "is_video", False) and getattr(post, "video_url", None):
                 suffix = ".m4a" if extract_audio else ".mp4"
-                tmp_file = download_to_temp_file(post.video_url, suffix=suffix)
+                tmp_file = download_to_temp_file(post.video_url, suffix=suffix, progress_callback=progress_callback)
                 if tmp_file:
                     return caption, tmp_file
             elif getattr(post, "url", None) and not extract_audio:
-                tmp_file = download_to_temp_file(post.url, suffix=".jpg")
+                tmp_file = download_to_temp_file(post.url, suffix=".jpg", progress_callback=progress_callback)
                 if tmp_file:
                     return caption, tmp_file
         except Exception as inst_err:
@@ -583,7 +603,7 @@ def download_instagram(url: str, extract_audio: bool = False) -> tuple[str, str 
 
 # ----------------- TIKTOK DOWNLOADER (HD NO WATERMARK + AUDIO) ----------------- #
 
-def download_tiktok(url: str, extract_audio: bool = False) -> tuple[str, str | None]:
+def download_tiktok(url: str, extract_audio: bool = False, progress_callback: Callable[[int], None] | None = None) -> tuple[str, str | None]:
     clean_url = url.strip()
     m = re.search(r'https?://(?:www\.|vt\.|vm\.|m\.)?tiktok\.com/[^\s\?]+', clean_url)
     base_clean_url = m.group(0) if m else clean_url.split("?")[0]
@@ -624,7 +644,7 @@ def download_tiktok(url: str, extract_audio: bool = False) -> tuple[str, str | N
                             if music_url:
                                 if music_url.startswith("/"):
                                     music_url = f"https://www.tikwm.com{music_url}"
-                                tmp_file = download_to_temp_file(music_url, suffix=".mp3")
+                                tmp_file = download_to_temp_file(music_url, suffix=".mp3", progress_callback=progress_callback)
                                 if tmp_file:
                                     return title, tmp_file
                     else:
@@ -634,7 +654,7 @@ def download_tiktok(url: str, extract_audio: bool = False) -> tuple[str, str | N
                             if v_url:
                                 if v_url.startswith("/"):
                                     v_url = f"https://www.tikwm.com{v_url}"
-                                tmp_file = download_to_temp_file(v_url, suffix=".mp4")
+                                tmp_file = download_to_temp_file(v_url, suffix=".mp4", progress_callback=progress_callback)
                                 if tmp_file:
                                     return title, tmp_file
             except Exception as e:
@@ -667,7 +687,7 @@ def download_tiktok(url: str, extract_audio: bool = False) -> tuple[str, str | N
                         for m_item in medias:
                             if isinstance(m_item, dict) and (m_item.get("type") == "audio" or "audio" in m_item.get("quality", "").lower()):
                                 if m_item.get("url"):
-                                    tmp_f = download_to_temp_file(m_item.get("url"), suffix=".mp3")
+                                    tmp_f = download_to_temp_file(m_item.get("url"), suffix=".mp3", progress_callback=progress_callback)
                                     if tmp_f:
                                         return title, tmp_f
                     else:
@@ -681,7 +701,7 @@ def download_tiktok(url: str, extract_audio: bool = False) -> tuple[str, str | N
                                 elif not best_vid:
                                     best_vid = m_item.get("url")
                         if best_vid:
-                            tmp_f = download_to_temp_file(best_vid, suffix=".mp4")
+                            tmp_f = download_to_temp_file(best_vid, suffix=".mp4", progress_callback=progress_callback)
                             if tmp_f:
                                 return title, tmp_f
         except Exception as rapid_tt_err:
@@ -742,7 +762,12 @@ def extract_youtube_id(url: str) -> str | None:
             return m.group(1)
     return None
 
-def download_youtube_loader_stream(canonical_url: str, extract_audio: bool = False, format_override: str | None = None) -> tuple[str, str | None]:
+def download_youtube_loader_stream(
+    canonical_url: str,
+    extract_audio: bool = False,
+    format_override: str | None = None,
+    progress_callback: Callable[[int], None] | None = None
+) -> tuple[str, str | None]:
     """
     High-Speed Cloud Resolver:
     Converts and downloads YouTube media via independent CDN pipelines.
@@ -751,10 +776,15 @@ def download_youtube_loader_stream(canonical_url: str, extract_audio: bool = Fal
     if format_override:
         fmt = format_override
     else:
-        fmt = "mp3" if extract_audio else "720"
+        fmt = "mp3" if extract_audio else "360"
 
     init_url = f"https://loader.to/ajax/download.php?format={fmt}&url={quote(canonical_url)}"
-    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json",
+        "Referer": "https://loader.to/",
+        "Origin": "https://loader.to"
+    }
 
     try:
         req = Request(init_url, headers=headers)
@@ -765,9 +795,21 @@ def download_youtube_loader_stream(canonical_url: str, extract_audio: bool = Fal
             if not job_id:
                 return title, None
 
-        # Poll up to 18 iterations (~27 seconds)
-        for _ in range(18):
+        if progress_callback:
+            try:
+                progress_callback(12)
+            except Exception:
+                pass
+
+        # Poll up to 16 iterations (~24 seconds)
+        for i in range(16):
             time.sleep(1.5)
+            if progress_callback and i % 3 == 0:
+                try:
+                    progress_callback(min(30, 12 + i * 2))
+                except Exception:
+                    pass
+
             prog_url = f"https://loader.to/ajax/progress.php?id={job_id}"
             preq = Request(prog_url, headers=headers)
             with urlopen(preq, timeout=10) as pres:
@@ -775,20 +817,30 @@ def download_youtube_loader_stream(canonical_url: str, extract_audio: bool = Fal
                 download_url = pdata.get("download_url")
                 if download_url and (pdata.get("success") == 1 or pdata.get("progress", 0) >= 1000 or pdata.get("download_url")):
                     suffix = ".mp3" if extract_audio else ".mp4"
-                    tmp_f = download_to_temp_file(download_url, suffix=suffix, referer="https://loader.to/")
+                    tmp_f = download_to_temp_file(
+                        download_url,
+                        suffix=suffix,
+                        referer="https://loader.to/",
+                        progress_callback=progress_callback
+                    )
                     if tmp_f and os.path.exists(tmp_f) and os.path.getsize(tmp_f) > 1000:
                         return title, tmp_f
+                    else:
+                        break
     except Exception as loader_err:
         log_error(f"Loader.to resolver error ({fmt}): {loader_err}")
 
     return "YouTube Media", None
 
-def download_youtube(url: str, extract_audio: bool = False) -> tuple[str, str | None]:
+def download_youtube(
+    url: str,
+    extract_audio: bool = False,
+    progress_callback: Callable[[int], None] | None = None
+) -> tuple[str, str | None]:
     """
     Multi-Tier YouTube Downloader:
     Tier 1: Cloud CDN Web Resolver (100% bypasses Google datacenter IP-lock)
-    Tier 2: Fast yt-dlp mobile client spoofing ('android') with progressive stream
-    Tier 3: Public Invidious stream resolver
+    Tier 2: Native yt-dlp with smart mobile & TV client spoofing ('tv_embedded', 'web_embedded', 'ios', 'mweb')
     """
     clean_url = url.strip()
     vid_id = extract_youtube_id(clean_url)
@@ -798,40 +850,72 @@ def download_youtube(url: str, extract_audio: bool = False) -> tuple[str, str | 
     prefix = f"yt_{uuid.uuid4().hex[:8]}"
     default_title = "YouTube Media"
 
-    # Tier 1: Cloud CDN Web Resolver (Preferred on Render & VPS datacenters)
+    # Tier 1: Cloud CDN Web Resolver
     if extract_audio:
-        t1_title, t1_file = download_youtube_loader_stream(target_url, extract_audio=True)
+        t1_title, t1_file = download_youtube_loader_stream(
+            target_url,
+            extract_audio=True,
+            progress_callback=progress_callback
+        )
         if t1_file and os.path.exists(t1_file) and os.path.getsize(t1_file) > 1000:
             return t1_title, t1_file
     else:
-        # First attempt 720p HD
-        t1_title, t1_file = download_youtube_loader_stream(target_url, extract_audio=False, format_override="720")
-        if t1_file and os.path.exists(t1_file) and os.path.getsize(t1_file) > 1000:
-            return t1_title, t1_file
-        # If 720 timed out or was too large (>50MB), quickly fallback to 360p
-        t1_title_360, t1_file_360 = download_youtube_loader_stream(target_url, extract_audio=False, format_override="360")
+        # First attempt 360p (fastest, guaranteed under 50MB, crystal clear on Telegram)
+        t1_title_360, t1_file_360 = download_youtube_loader_stream(
+            target_url,
+            extract_audio=False,
+            format_override="360",
+            progress_callback=progress_callback
+        )
         if t1_file_360 and os.path.exists(t1_file_360) and os.path.getsize(t1_file_360) > 1000:
             return t1_title_360, t1_file_360
 
-    # Tier 2: yt-dlp Native Download with Mobile Client Spoofing (Fast single attempt)
+        # Secondary attempt 720p HD
+        t1_title_720, t1_file_720 = download_youtube_loader_stream(
+            target_url,
+            extract_audio=False,
+            format_override="720",
+            progress_callback=progress_callback
+        )
+        if t1_file_720 and os.path.exists(t1_file_720) and os.path.getsize(t1_file_720) > 1000:
+            return t1_title_720, t1_file_720
+
+    # Tier 2: yt-dlp Native Download with TV / iOS / Embedded Client Spoofing
     try:
         out_tmpl = os.path.join(temp_dir, f"{prefix}.%(ext)s")
         if extract_audio:
-            format_spec = "140/bestaudio[ext=m4a]/bestaudio/best"
+            format_spec = "bestaudio[ext=m4a]/bestaudio/best"
         else:
-            format_spec = "22/18/best[height<=720]/best"
+            format_spec = "best[ext=mp4][height<=720]/best[height<=720]/bestvideo[height<=720]+bestaudio/best"
+
+        def ydl_progress_hook(d: dict[str, Any]):
+            if d.get("status") == "downloading" and progress_callback:
+                total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                dl = d.get("downloaded_bytes") or 0
+                if total > 0:
+                    pct = min(95, int(15 + (dl / total) * 80))
+                    try:
+                        progress_callback(pct)
+                    except Exception:
+                        pass
 
         ydl_opts: dict[str, Any] = {
             'format': format_spec,
             'outtmpl': out_tmpl,
             'quiet': True,
             'no_warnings': True,
-            'socket_timeout': 15,
+            'socket_timeout': 30,
             'nocheckcertificate': True,
             'source_address': '0.0.0.0',
             'cachedir': False,
             'ignoreerrors': True,
-            'extractor_args': {'youtube': {'player_client': ['android']}}
+            'progress_hooks': [ydl_progress_hook],
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['tv_embedded', 'web_embedded', 'ios', 'mweb'],
+                    'player_skip': ['webpage', 'configs'],
+                }
+            }
         }
         if os.path.exists("cookies.txt"):
             ydl_opts['cookiefile'] = os.path.abspath("cookies.txt")
@@ -849,43 +933,7 @@ def download_youtube(url: str, extract_audio: bool = False) -> tuple[str, str | 
                         if os.path.getsize(f_path) > 1000:
                             return title, f_path
     except Exception as ydl_err:
-        log_error(f"yt-dlp YouTube android client failed: {ydl_err}")
-
-    # Tier 3: Invidious Resolver
-    if vid_id:
-        invidious_instances = [
-            "https://inv.tux.pizza",
-            "https://invidious.nerdvpn.de",
-            "https://invidious.jing.rocks",
-            "https://yt.artemislena.eu"
-        ]
-        for inv_host in invidious_instances:
-            try:
-                api_url = f"{inv_host}/api/v1/videos/{vid_id}"
-                req = Request(api_url, headers={"User-Agent": USER_AGENT})
-                with urlopen(req, timeout=8) as res:
-                    data = json.loads(res.read().decode("utf-8"))
-
-                if isinstance(data, dict):
-                    title = data.get("title") or default_title
-                    if extract_audio:
-                        for af in data.get("adaptiveFormats", []):
-                            if af.get("type", "").startswith("audio"):
-                                stream_url = af.get("url")
-                                if stream_url:
-                                    ext = ".m4a" if "mp4a" in af.get("type", "") else ".mp3"
-                                    tmp_f = download_to_temp_file(stream_url, suffix=ext, referer=inv_host)
-                                    if tmp_f and os.path.exists(tmp_f) and os.path.getsize(tmp_f) > 1000:
-                                        return title, tmp_f
-                    else:
-                        for fs in reversed(data.get("formatStreams", [])):
-                            stream_url = fs.get("url")
-                            if stream_url:
-                                tmp_f = download_to_temp_file(stream_url, suffix=".mp4", referer=inv_host)
-                                if tmp_f and os.path.exists(tmp_f) and os.path.getsize(tmp_f) > 1000:
-                                    return title, tmp_f
-            except Exception:
-                continue
+        log_error(f"yt-dlp YouTube client failed: {ydl_err}")
 
     return default_title, None
 
@@ -1111,17 +1159,19 @@ def process_download_execution(
     extract_audio = (format_type == "a")
     format_label = "Audio (MP3)" if extract_audio else "Video (HD)"
 
-    # Step 1: Animated Progress Bar - 30%
-    try:
-        bot_instance.edit_message_text(
-            f"⏳ <b>Downloading {format_label}...</b>\n"
-            f"[ ▰▰▰▱▱▱▱▱▱▱ ] <b>30%</b> • <i>Connecting to stream...</i>",
-            chat_id,
-            status_msg_id,
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
+    def report_pct(pct: int):
+        try:
+            val = max(1, min(100, int(pct)))
+            if val >= 100:
+                txt = f"🚀 <b>Uploading {format_label}...</b> <code>100%</code>"
+            else:
+                txt = f"⚡ <b>Downloading {format_label}...</b> <code>{val}%</code>"
+            bot_instance.edit_message_text(txt, chat_id, status_msg_id, parse_mode="HTML")
+        except Exception:
+            pass
+
+    # Initial Progress - 5%
+    report_pct(5)
 
     local_file = None
     try:
@@ -1129,11 +1179,11 @@ def process_download_execution(
         file_path = None
 
         if platform == "instagram":
-            title, file_path = download_instagram(url, extract_audio=extract_audio)
+            title, file_path = download_instagram(url, extract_audio=extract_audio, progress_callback=report_pct)
         elif platform == "tiktok":
-            title, file_path = download_tiktok(url, extract_audio=extract_audio)
+            title, file_path = download_tiktok(url, extract_audio=extract_audio, progress_callback=report_pct)
         elif platform == "youtube":
-            title, file_path = download_youtube(url, extract_audio=extract_audio)
+            title, file_path = download_youtube(url, extract_audio=extract_audio, progress_callback=report_pct)
         elif platform == "facebook":
             title, file_path = download_facebook(url, extract_audio=extract_audio)
 
@@ -1146,17 +1196,7 @@ def process_download_execution(
             )
             return
 
-        # Step 2: Animated Progress Bar - 75%
-        try:
-            bot_instance.edit_message_text(
-                f"⚡ <b>Processing {format_label}...</b>\n"
-                f"[ ▰▰▰▰▰▰▰▱▱▱ ] <b>75%</b> • <i>Finalizing media packaging...</i>",
-                chat_id,
-                status_msg_id,
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
+        report_pct(98)
 
         caption_text = (
             f"📥 <b>{escape(title[:200])}</b>\n\n"
@@ -1176,17 +1216,8 @@ def process_download_execution(
                 )
                 return
 
-            # Step 3: Animated Progress Bar - 100%
-            try:
-                bot_instance.edit_message_text(
-                    f"🚀 <b>Uploading to Telegram...</b>\n"
-                    f"[ ▰▰▰▰▰▰▰▰▰▰ ] <b>100%</b> • <i>Delivering media file!</i>",
-                    chat_id,
-                    status_msg_id,
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
+            # Final 100% Uploading
+            report_pct(100)
 
             with open(local_file, "rb") as f:
                 if extract_audio:
