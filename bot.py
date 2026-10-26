@@ -762,75 +762,88 @@ def extract_youtube_id(url: str) -> str | None:
             return m.group(1)
     return None
 
-def download_youtube_loader_stream(
+def download_youtube_cloud_stream(
     canonical_url: str,
-    extract_audio: bool = False,
-    format_override: str | None = None,
+    format_type: str = "mp3",
     progress_callback: Callable[[int], None] | None = None
 ) -> tuple[str, str | None]:
     """
     High-Speed Cloud Resolver:
-    Converts and downloads YouTube media via independent CDN pipelines.
-    Completely bypasses YouTube datacenter IP-locks and Google 403 Forbidden!
+    Converts and downloads YouTube media via independent CDN streaming pipelines.
+    Completely bypasses YouTube datacenter IP-locks, Google visitor checks, and 403 Forbidden!
     """
-    if format_override:
-        fmt = format_override
-    else:
-        fmt = "mp3" if extract_audio else "360"
+    endpoints = [
+        {
+            "init": "https://p.savenow.to/ajax/download.php?format={fmt}&url={url}",
+            "prog": "https://p.savenow.to/api/progress?id={id}",
+            "ref": "https://p.savenow.to/",
+            "origin": "https://p.savenow.to"
+        },
+        {
+            "init": "https://loader.to/ajax/download.php?format={fmt}&url={url}",
+            "prog": "https://loader.to/ajax/progress.php?id={id}",
+            "ref": "https://loader.to/",
+            "origin": "https://loader.to"
+        }
+    ]
 
-    init_url = f"https://loader.to/ajax/download.php?format={fmt}&url={quote(canonical_url)}"
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "application/json",
-        "Referer": "https://loader.to/",
-        "Origin": "https://loader.to"
-    }
+    clean_u = quote(canonical_url)
+    default_title = "YouTube Media"
 
-    try:
-        req = Request(init_url, headers=headers)
-        with urlopen(req, timeout=12) as res:
-            data = json.loads(res.read().decode("utf-8"))
-            job_id = data.get("id")
-            title = data.get("title") or "YouTube Media"
-            if not job_id:
-                return title, None
+    for ep in endpoints:
+        try:
+            init_url = ep["init"].format(fmt=format_type, url=clean_u)
+            headers = {
+                "User-Agent": USER_AGENT,
+                "Accept": "application/json",
+                "Referer": ep["ref"],
+                "Origin": ep["origin"]
+            }
+            req = Request(init_url, headers=headers)
+            with urlopen(req, timeout=12) as res:
+                data = json.loads(res.read().decode("utf-8"))
+                job_id = data.get("id")
+                title = data.get("title") or default_title
+                if not job_id:
+                    continue
 
-        if progress_callback:
-            try:
-                progress_callback(12)
-            except Exception:
-                pass
-
-        # Poll up to 16 iterations (~24 seconds)
-        for i in range(16):
-            time.sleep(1.5)
-            if progress_callback and i % 3 == 0:
+            if progress_callback:
                 try:
-                    progress_callback(min(30, 12 + i * 2))
+                    progress_callback(15)
                 except Exception:
                     pass
 
-            prog_url = f"https://loader.to/ajax/progress.php?id={job_id}"
-            preq = Request(prog_url, headers=headers)
-            with urlopen(preq, timeout=10) as pres:
-                pdata = json.loads(pres.read().decode("utf-8"))
-                download_url = pdata.get("download_url")
-                if download_url and (pdata.get("success") == 1 or pdata.get("progress", 0) >= 1000 or pdata.get("download_url")):
-                    suffix = ".mp3" if extract_audio else ".mp4"
-                    tmp_f = download_to_temp_file(
-                        download_url,
-                        suffix=suffix,
-                        referer="https://loader.to/",
-                        progress_callback=progress_callback
-                    )
-                    if tmp_f and os.path.exists(tmp_f) and os.path.getsize(tmp_f) > 1000:
-                        return title, tmp_f
-                    else:
-                        break
-    except Exception as loader_err:
-        log_error(f"Loader.to resolver error ({fmt}): {loader_err}")
+            # Poll up to 16 iterations (~24 seconds)
+            for i in range(16):
+                time.sleep(1.5)
+                if progress_callback and i % 3 == 0:
+                    try:
+                        progress_callback(min(35, 15 + i * 2))
+                    except Exception:
+                        pass
 
-    return "YouTube Media", None
+                prog_url = ep["prog"].format(id=job_id)
+                preq = Request(prog_url, headers=headers)
+                with urlopen(preq, timeout=10) as pres:
+                    pdata = json.loads(pres.read().decode("utf-8"))
+                    download_url = pdata.get("download_url")
+                    is_ready = download_url and (pdata.get("success") == 1 or pdata.get("progress", 0) >= 1000 or pdata.get("download_url"))
+                    if is_ready:
+                        suffix = ".mp3" if format_type == "mp3" else ".mp4"
+                        tmp_f = download_to_temp_file(
+                            download_url,
+                            suffix=suffix,
+                            referer=ep["ref"],
+                            progress_callback=progress_callback
+                        )
+                        if tmp_f and os.path.exists(tmp_f) and os.path.getsize(tmp_f) > 1000:
+                            return title, tmp_f
+                        else:
+                            break
+        except Exception as ep_err:
+            log_error(f"Cloud YouTube resolver error on {ep['ref']} ({format_type}): {ep_err}")
+
+    return default_title, None
 
 def download_youtube(
     url: str,
@@ -839,7 +852,7 @@ def download_youtube(
 ) -> tuple[str, str | None]:
     """
     Multi-Tier YouTube Downloader:
-    Tier 1: Cloud CDN Web Resolver (100% bypasses Google datacenter IP-lock)
+    Tier 1: High-Speed Cloud CDN Web Resolvers (100% bypasses Google datacenter IP-lock)
     Tier 2: Native yt-dlp with smart mobile & TV client spoofing ('tv_embedded', 'web_embedded', 'ios', 'mweb')
     """
     clean_url = url.strip()
@@ -852,33 +865,37 @@ def download_youtube(
 
     # Tier 1: Cloud CDN Web Resolver
     if extract_audio:
-        t1_title, t1_file = download_youtube_loader_stream(
+        t1_title, t1_file = download_youtube_cloud_stream(
             target_url,
-            extract_audio=True,
+            format_type="mp3",
             progress_callback=progress_callback
         )
         if t1_file and os.path.exists(t1_file) and os.path.getsize(t1_file) > 1000:
             return t1_title, t1_file
     else:
-        # First attempt 360p (fastest, guaranteed under 50MB, crystal clear on Telegram)
-        t1_title_360, t1_file_360 = download_youtube_loader_stream(
+        # First attempt: 720p HD (Studio video + audio pre-merged on CDN)
+        t1_title_720, t1_file_720 = download_youtube_cloud_stream(
             target_url,
-            extract_audio=False,
-            format_override="360",
+            format_type="720",
+            progress_callback=progress_callback
+        )
+        if t1_file_720 and os.path.exists(t1_file_720) and os.path.getsize(t1_file_720) > 1000:
+            if os.path.getsize(t1_file_720) <= 49.5 * 1024 * 1024:
+                return t1_title_720, t1_file_720
+            else:
+                try:
+                    os.remove(t1_file_720)
+                except Exception:
+                    pass
+
+        # Second attempt: 360p (Guaranteed under 50MB, fast and crystal clear on Telegram)
+        t1_title_360, t1_file_360 = download_youtube_cloud_stream(
+            target_url,
+            format_type="360",
             progress_callback=progress_callback
         )
         if t1_file_360 and os.path.exists(t1_file_360) and os.path.getsize(t1_file_360) > 1000:
             return t1_title_360, t1_file_360
-
-        # Secondary attempt 720p HD
-        t1_title_720, t1_file_720 = download_youtube_loader_stream(
-            target_url,
-            extract_audio=False,
-            format_override="720",
-            progress_callback=progress_callback
-        )
-        if t1_file_720 and os.path.exists(t1_file_720) and os.path.getsize(t1_file_720) > 1000:
-            return t1_title_720, t1_file_720
 
     # Tier 2: yt-dlp Native Download with TV / iOS / Embedded Client Spoofing
     try:
@@ -1112,27 +1129,28 @@ def prompt_media_choice(
     short_id = register_download_task(url, platform, message.chat.id)
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    btn_video = types.InlineKeyboardButton("🎬 Video (HD)", callback_data=f"dl:v:{short_id}")
-    btn_audio = types.InlineKeyboardButton("🎵 Audio (MP3)", callback_data=f"dl:a:{short_id}")
+    btn_video = types.InlineKeyboardButton("🎬 Video (Full HD)", callback_data=f"dl:v:{short_id}")
+    btn_audio = types.InlineKeyboardButton("🎵 Audio (Studio MP3)", callback_data=f"dl:a:{short_id}")
     markup.add(btn_video, btn_audio)
 
     # Ultra-Professional Platform UI Badges
     platform_info = {
-        "instagram": ("📸 Instagram Reel / Post", "High-Definition Video with Full Audio Guarantee"),
-        "tiktok": ("🎵 TikTok HD Media", "100% Watermark-Free HD Video & Studio Audio"),
-        "youtube": ("🔴 YouTube Video / Shorts", "HD Quality 1080p/720p Video & MP3 Audio"),
-        "facebook": ("🔵 Facebook Video / Reel", "High-Definition Video & High-Bitrate MP3")
+        "instagram": ("📸 Instagram Reel / Post", "100% Guaranteed Audio • Crisp HD Video"),
+        "tiktok": ("🎵 TikTok Ultra HD", "Watermark-Free HD Video • Studio MP3 Audio"),
+        "youtube": ("🔴 YouTube Video / Shorts", "Ultra HD 1080p/720p Video • High-Bitrate MP3"),
+        "facebook": ("🔵 Facebook Reel / Video", "Crystal-Clear HD Video • High-Quality MP3")
     }
     title_label, desc_label = platform_info.get(platform, ("🎬 Media Stream", "Instant HD Media"))
 
     clean_preview = url[:70] + "..." if len(url) > 70 else url
 
     prompt_text = (
-        f"⚡ <b>{title_label} Detected!</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔗 <b>Source:</b> <code>{escape(clean_preview)}</code>\n"
-        f"✨ <i>{desc_label}</i>\n\n"
-        f"👇 <b>Select your desired format:</b>"
+        f"╭━━━━━ 🎬 <b>MEDIA DETECTED</b> ━━━━━╮\n"
+        f"✨ <b>Source:</b> {title_label}\n"
+        f"🔗 <b>URL:</b> <code>{escape(clean_preview)}</code>\n"
+        f"💎 <i>{desc_label}</i>\n"
+        f"╰━━━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
+        f"👇 <b>Select your desired download format:</b>"
     )
 
     safe_reply(bot_instance, message, prompt_text, parse_mode="HTML", reply_markup=markup)
@@ -1199,8 +1217,11 @@ def process_download_execution(
         report_pct(98)
 
         caption_text = (
-            f"📥 <b>{escape(title[:200])}</b>\n\n"
-            f"⚡ <i>Downloaded via 7G Master Bot</i> ✨"
+            f"╭━━━━ 📥 <b>DOWNLOAD COMPLETE</b> ━━━━╮\n"
+            f"🎬 <b>Title:</b> {escape(title[:180])}\n"
+            f"💎 <b>Quality:</b> Ultra HD • Clean Audio\n"
+            f"⚡ <i>Downloaded via 7G Master Bot</i> 🚀\n"
+            f"╰━━━━━━━━━━━━━━━━━━━━━━━━╯"
         )
 
         if os.path.isfile(file_path):
@@ -1407,19 +1428,24 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
 
         # Clean, Short & Ultra-Modern Welcome Message
         welcome_text = (
-            "⚡ <b>7G Ultimate Master Bot</b> 🚀\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "📥 <b>Instant HD Downloader (No Watermarks):</b>\n"
-            "• 📸 <b>Instagram:</b> Reels & Posts <i>(Full Audio Guarantee)</i>\n"
-            "• 🎵 <b>TikTok:</b> Ultra HD Video & MP3 Audio\n"
-            "• 🔴 <b>YouTube:</b> HD 1080p Videos & Shorts + MP3 Audio\n"
-            "• 🔵 <b>Facebook:</b> HD Videos & Reels + MP3 Audio\n\n"
-            "🤖 <b>AI Assistant Features:</b>\n"
-            "• 💡 <b>Meta AI:</b> Chat directly or use <code>/ai &lt;query&gt;</code>\n"
-            "• 🎨 <b>AI Images:</b> Create photos with <code>/image &lt;prompt&gt;</code>\n"
-            "• 🤖 <b>Host Bot:</b> Tap <i>'Create Own Bot'</i> for 100% FREE cloning!\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "👉 <i>Send any link above to start downloading!</i>"
+            "✨ <b>━━━━━━━━━━━━━━━━━━━━━━━━━━</b> ✨\n"
+            "👑 <b>7G ULTIMATE MASTER BOT • VIP EDITION</b> 🚀\n"
+            "✨ <b>━━━━━━━━━━━━━━━━━━━━━━━━━━</b> ✨\n\n"
+            "👋 <b>Welcome!</b> <i>Your lightning-fast, ultra-high-definition all-in-one downloader & AI companion!</i>\n\n"
+            "💎 <b>INSTANT HD DOWNLOADER (NO WATERMARKS)</b>\n"
+            "╭───────────────────────╮\n"
+            "  📸 <b>Instagram:</b> Reels & Posts <i>(Audio 100% Guaranteed)</i>\n"
+            "  🎵 <b>TikTok:</b> Ultra HD Video & Studio MP3 Audio\n"
+            "  🔴 <b>YouTube:</b> 1080p/720p HD Videos & Shorts + Studio MP3\n"
+            "  🔵 <b>Facebook:</b> HD Videos & Reels + High-Bitrate MP3\n"
+            "╰───────────────────────╯\n\n"
+            "🧠 <b>SMART AI FEATURES</b>\n"
+            "╭───────────────────────╮\n"
+            "  💡 <b>Meta AI:</b> Chat directly or use <code>/ai &lt;query&gt;</code>\n"
+            "  🎨 <b>Image Studio:</b> Generate photos with <code>/image &lt;prompt&gt;</code>\n"
+            "  🤖 <b>Host Own Bot:</b> Tap <i>'Create Own Bot'</i> for 100% FREE cloning!\n"
+            "╰───────────────────────╯\n\n"
+            "⚡ <b>Send any link above to start downloading!</b> 📥"
         )
         safe_reply(bot_instance, message, welcome_text, parse_mode="HTML", reply_markup=keyboard)
 
@@ -1441,20 +1467,20 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
         nationality = uinfo.get("nationality") or (f"🌐 {escape(uinfo.get('language_code', 'en')).upper()} Region")
 
         stats_text = (
-            f"📊 <b>YOUR BOT PROFILE & STATS</b> 🌟\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"╭━━━━ 📊 <b>YOUR VIP PROFILE & STATS</b> ━━━━╮\n"
             f"👤 <b>Name:</b> {escape(message.from_user.first_name)}\n"
             f"🔗 <b>Username:</b> @{escape(message.from_user.username) if message.from_user.username else 'No Username'}\n"
             f"🆔 <b>User ID:</b> <code>{message.chat.id}</code>\n"
             f"🌐 <b>Country / Region:</b> {nationality}\n"
-            f"📅 <b>Joined Date:</b> <code>{first_seen}</code>\n"
-            f"⏱️ <b>Last Activity:</b> <code>{last_seen}</code>\n"
+            f"📅 <b>Member Since:</b> <code>{first_seen}</code>\n"
+            f"⏱️ <b>Recent Activity:</b> <code>{last_seen}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"💬 <b>Messages Sent:</b> <code>{msg_count}</code>\n"
             f"📥 <b>Media Downloaded:</b> <code>{dl_count}</code>\n"
             f"👥 <b>Friends Invited:</b> <code>{referrals}</code>\n"
-            f"🌟 <b>Reward Points:</b> <code>{points} pts</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚡ <i>Thank you for using 7G Master Bot!</i> ❤️"
+            f"🌟 <b>Reward Balance:</b> <code>{points} PTS</code>\n"
+            f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯\n"
+            f"⚡ <i>Thank you for using 7G Master Bot!</i> 💖"
         )
         safe_reply(bot_instance, message, stats_text, parse_mode="HTML")
 
@@ -1478,24 +1504,27 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
         total_messages = sum(u.get("msg_count", 0) for u in users_db.values() if isinstance(u, dict))
 
         dashboard = (
-            f"👑 <b>MASTER ADMIN DASHBOARD</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"👥 <b>Total Registered Users:</b> <code>{total_users}</code>\n"
-            f"📥 <b>Total Media Downloads:</b> <code>{total_downloads}</code>\n"
-            f"💬 <b>Total User Messages:</b> <code>{total_messages}</code>\n"
-            f"🤖 <b>Total Cloned Bots:</b> <code>{total_clones}</code>\n"
-            f"🚫 <b>Banned Users:</b> <code>{total_banned}</code>\n"
-            f"🛠️ <b>Maintenance Mode:</b> <b>{maintenance}</b>\n"
-            f"🕒 <b>Server Time:</b> <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚡ <b>Commands:</b>\n"
-            f"• <code>/clones</code> - Manage all cloned bots (Stop/Start/Delete)\n"
-            f"• <code>/users</code> - List all registered users with country info\n"
-            f"• <code>/userinfo &lt;id&gt;</code> - Inspect user history & links\n"
-            f"• <code>/ban &lt;id&gt;</code> & <code>/unban &lt;id&gt;</code>\n"
-            f"• <code>/broadcast &lt;text&gt;</code> - Global announcement\n"
-            f"• <code>/maintenance</code> - Toggle maintenance (broadcasts on ON & OFF)\n"
-            f"• <code>/restoredb</code> - Reply to a backup json to restore DB!"
+            f"👑 <b>━━━━━━━━━━━━━━━━━━━━━━━━━━</b> 👑\n"
+            f"⚡ <b>7G MASTER BOT • ADMIN COMMAND CENTER</b> ⚡\n"
+            f"👑 <b>━━━━━━━━━━━━━━━━━━━━━━━━━━</b> 👑\n\n"
+            f"📊 <b>LIVE SYSTEM METRICS:</b>\n"
+            f"╭────────────────────────╮\n"
+            f"  👥 <b>Total Users:</b> <code>{total_users}</code>\n"
+            f"  📥 <b>Total Downloads:</b> <code>{total_downloads}</code>\n"
+            f"  💬 <b>Total Messages:</b> <code>{total_messages}</code>\n"
+            f"  🤖 <b>Cloned Bots:</b> <code>{total_clones}</code>\n"
+            f"  🚫 <b>Banned Users:</b> <code>{total_banned}</code>\n"
+            f"  🛠️ <b>Maintenance:</b> <b>{maintenance}</b>\n"
+            f"  🕒 <b>Server Time:</b> <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>\n"
+            f"╰────────────────────────╯\n\n"
+            f"⚡ <b>ADMIN COMMANDS:</b>\n"
+            f"• <code>/clones</code> — Manage cloned bots (Stop/Start/Delete)\n"
+            f"• <code>/users</code> — List all users with country analytics\n"
+            f"• <code>/userinfo &lt;id&gt;</code> — Inspect complete user history\n"
+            f"• <code>/ban &lt;id&gt;</code> & <code>/unban &lt;id&gt;</code> — Access control\n"
+            f"• <code>/broadcast &lt;text&gt;</code> — Global announcement\n"
+            f"• <code>/maintenance</code> — Toggle maintenance mode\n"
+            f"• <code>/restoredb</code> — Reply to backup JSON to restore DB!"
         )
         safe_reply(bot_instance, message, dashboard, parse_mode="HTML")
 
@@ -1511,8 +1540,8 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             return
 
         report = [
-            f"🤖 <b>CLONED BOTS MANAGEMENT PANEL ({len(clones_db)} Bots)</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"╭━━━━ 🤖 <b>CLONED BOTS CONTROLLER ({len(clones_db)} Bots)</b> ━━━━╮\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ]
 
         markup = types.InlineKeyboardMarkup(row_width=2)
@@ -1540,13 +1569,14 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
                 del_btn = types.InlineKeyboardButton(f"🗑️ Del", callback_data=f"clone:del:{b_id}")
                 markup.add(toggle_btn, del_btn)
 
-        report.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        report.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         report.append(
             "⚡ <b>Commands:</b>\n"
-            "• <code>/stopbot &lt;bot_id&gt;</code> - Stop a specific bot\n"
-            "• <code>/startbot &lt;bot_id&gt;</code> - Resume a stopped bot\n"
-            "• <code>/delbot &lt;bot_id&gt;</code> - Delete a bot permanently"
+            "• <code>/stopbot &lt;bot_id&gt;</code> — Stop a specific bot\n"
+            "• <code>/startbot &lt;bot_id&gt;</code> — Resume a stopped bot\n"
+            "• <code>/delbot &lt;bot_id&gt;</code> — Delete a bot permanently"
         )
+        report.append("╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯")
 
         full_output = "\n".join(report)
         chunk_and_send(bot_instance, message.chat.id, full_output, parse_mode="HTML")
@@ -1650,8 +1680,8 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             return
 
         lines = [
-            f"📋 <b>ALL REGISTERED USERS DIRECTORY ({len(users_db)} Users)</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"╭━━━━ 📋 <b>REGISTERED USERS DIRECTORY ({len(users_db)} Users)</b> ━━━━╮\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ]
 
         sorted_users = sorted(
@@ -1669,13 +1699,17 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             last = info.get("last_seen", "N/A")
 
             lines.append(
-                f"<b>{idx}. {name}</b> ({uname})\n"
-                f"   • ID: <code>{uid}</code> | Country: {nationality}\n"
+                f"<b>{idx}. {name}</b> (@{uname})\n"
+                f"   • ID: <code>{uid}</code> | Region: {nationality}\n"
                 f"   • Msgs: <code>{msgs}</code> | DLs: <code>{downloads}</code> | Active: <code>{last}</code>"
             )
 
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("💡 <i>Use /userinfo &lt;user_id&gt; to view complete user history and links.</i>")
+        report_footer = (
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "💡 <i>Tip: Send <code>/userinfo &lt;user_id&gt;</code> to inspect complete activity log.</i>\n"
+            "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
+        )
+        lines.append(report_footer)
 
         full_output = "\n".join(lines)
         chunk_and_send(bot_instance, message.chat.id, full_output, parse_mode="HTML")
@@ -1725,23 +1759,21 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             serialized_links = "  <i>(No downloaded links recorded)</i>"
 
         details = (
-            f"🔍 <b>DETAILED USER PROFILE & ACTIVITY LOG</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"╭━━━━ 🔍 <b>USER AUDIT & ACTIVITY DOSSIER</b> ━━━━╮\n"
             f"👤 <b>Name:</b> {name}\n"
-            f"🔗 <b>Username:</b> {uname}\n"
+            f"🔗 <b>Username:</b> @{uname}\n"
             f"🆔 <b>User ID:</b> <code>{target_id}</code>\n"
-            f"🌐 <b>Country:</b> {nationality}\n"
-            f"📅 <b>Joined Date:</b> <code>{first_seen}</code>\n"
-            f"⏱️ <b>Last Activity:</b> <code>{last_seen}</code>\n"
+            f"🌐 <b>Region:</b> {nationality}\n"
+            f"📅 <b>Member Since:</b> <code>{first_seen}</code>\n"
+            f"⏱️ <b>Recent Activity:</b> <code>{last_seen}</code>\n"
             f"👥 <b>Referred By:</b> <code>{referred_by}</code>\n"
-            f"🎯 <b>Invited Users Count:</b> <code>{len(referrals)}</code>\n"
-            f"🌟 <b>Reward Points:</b> <code>{points} pts</code>\n"
-            f"💬 <b>Total Messages:</b> <code>{msg_count}</code>\n"
-            f"📥 <b>Total Downloads:</b> <code>{dl_count}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 <b>Invited Friends:</b> <code>{len(referrals)}</code>\n"
+            f"🌟 <b>Reward Balance:</b> <code>{points} PTS</code>\n"
+            f"💬 <b>Total Messages:</b> <code>{msg_count}</code> | 📥 <b>Downloads:</b> <code>{dl_count}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"💬 <b>RECENT MESSAGES (LAST 25):</b>\n{serialized_msgs}\n\n"
             f"🔗 <b>DOWNLOADED LINKS (LAST 25):</b>\n{serialized_links}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
         )
         chunk_and_send(bot_instance, message.chat.id, details, parse_mode="HTML")
 
@@ -1897,14 +1929,14 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
                 me = bot_instance.get_me()
                 ref_link = f"https://t.me/{me.username}?start={message.chat.id}"
                 invite_card = (
-                    f"👥 <b>INVITE FRIENDS & EARN REWARDS</b> 🌟\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🔗 <b>Your Personal Invite Link:</b>\n"
+                    f"╭━━━━ 👥 <b>INVITE FRIENDS & EARN</b> ━━━━╮\n"
+                    f"🔗 <b>Your Exclusive Referral Link:</b>\n"
                     f"<code>{ref_link}</code>\n\n"
-                    f"💡 <b>Reward System:</b>\n"
-                    f"• Share this link with friends and groups.\n"
-                    f"• Earn <b>+10 Reward Points</b> for every new user who joins!\n"
-                    f"• Track your invited friends anytime in <b>📊 My Stats</b>."
+                    f"🎁 <b>REWARD PERKS:</b>\n"
+                    f"• Share your link with friends, groups & channels.\n"
+                    f"• Earn <b>+10 Points</b> instantly for every new member!\n"
+                    f"• Check your points anytime in <b>📊 My Stats</b>.\n"
+                    f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
                 )
                 safe_reply(bot_instance, message, invite_card, parse_mode="HTML")
             except Exception:
@@ -1918,12 +1950,13 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
 
             AWAITING_BOT_TOKEN.add(message.chat.id)
             prompt_text = (
-                "🤖 <b>Create & Host Your Own Bot For FREE!</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━\n"
-                "1. Go to @BotFather on Telegram.\n"
-                "2. Create a new bot with <code>/newbot</code> and copy your <b>Bot Token</b>.\n"
-                "3. <b>Paste and send your Bot Token directly here in this chat!</b>\n\n"
-                "⚡ <i>Your personal bot will instantly go LIVE with Instagram, TikTok HD, YouTube, Facebook & AI features!</i>"
+                "╭━━━━ 🤖 <b>HOST YOUR OWN BOT FREE</b> ━━━━╮\n"
+                "🚀 <b>Launch your personal bot in 3 simple steps:</b>\n\n"
+                "1️⃣ Open @BotFather on Telegram.\n"
+                "2️⃣ Send <code>/newbot</code>, choose a name & copy the <b>Bot Token</b>.\n"
+                "3️⃣ <b>Paste and send your Bot Token directly here in this chat!</b>\n\n"
+                "✨ <i>Your clone will instantly activate with YouTube HD, TikTok, Instagram, Facebook & AI features 24/7!</i>\n"
+                "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
             )
             safe_reply(bot_instance, message, prompt_text, parse_mode="HTML")
             return
@@ -2004,13 +2037,18 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
 def broadcast_maintenance_notice(admin_chat_id: int, is_maintenance_on: bool) -> None:
     if is_maintenance_on:
         notice_text = (
-            "⚠️ <b>Notice:</b> The bot is currently undergoing system security updates and maintenance. "
-            "It is temporarily unavailable. Please try again later! 🛠️"
+            "⚠️ <b>━━━━━━━━━━━━━━━━━━━━━━━━━━</b> ⚠️\n"
+            "🛠️ <b>SYSTEM MAINTENANCE ANNOUNCEMENT</b>\n"
+            "⚠️ <b>━━━━━━━━━━━━━━━━━━━━━━━━━━</b> ⚠️\n\n"
+            "Dear user, 7G Master Bot is currently undergoing scheduled security updates & performance enhancements.\n"
+            "The bot is temporarily paused and will resume shortly. Thank you for your patience! ✨"
         )
     else:
         notice_text = (
-            "✅ <b>Notice:</b> System maintenance is completed! "
-            "The bot is now fully online, unlocked, and ready for you to use. Enjoy! 🚀✨"
+            "✨ <b>━━━━━━━━━━━━━━━━━━━━━━━━━━</b> ✨\n"
+            "🚀 <b>SYSTEM MAINTENANCE COMPLETED</b>\n"
+            "✨ <b>━━━━━━━━━━━━━━━━━━━━━━━━━━</b> ✨\n\n"
+            "Great news! All system updates are complete. 7G Master Bot is fully online, unlocked, and faster than ever. Enjoy! 🎉🔥"
         )
 
     users_db = load_data(USER_FILE)
