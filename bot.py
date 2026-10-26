@@ -38,10 +38,23 @@ except Exception:
     pass
 
 import requests
+import socket
 from flask import Flask, jsonify
 import telebot
 from telebot import types
 import yt_dlp
+
+# Force IPv4 resolution for Telegram APIs to prevent broken IPv6 blackholes/timeouts on Render/cloud
+_orig_getaddrinfo = socket.getaddrinfo
+def _patched_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if host and 'telegram.org' in host:
+        family = socket.AF_INET
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+socket.getaddrinfo = _patched_getaddrinfo
+
+# Set robust HTTP timeouts for telebot to prevent Read timed out (default 30s) on slow networks
+telebot.apihelper.READ_TIMEOUT = 60
+telebot.apihelper.CONNECT_TIMEOUT = 25
 
 # Ensure static ffmpeg paths if installed (for Render / cloud environments)
 try:
@@ -1961,15 +1974,23 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             safe_reply(bot_instance, message, prompt_text, parse_mode="HTML")
             return
 
-        if not is_clone and message.chat.id in AWAITING_BOT_TOKEN:
-            candidate_token = text
-            if re.match(r"^\d{8,12}:[a-zA-Z0-9_-]{35}$", candidate_token):
-                AWAITING_BOT_TOKEN.discard(message.chat.id)
+        candidate_token = text.strip()
+        is_token_format = bool(re.match(r"^\d{8,12}:[a-zA-Z0-9_-]{35}$", candidate_token))
+
+        if not is_clone and (message.chat.id in AWAITING_BOT_TOKEN or is_token_format):
+            AWAITING_BOT_TOKEN.discard(message.chat.id)
+            if is_token_format:
                 safe_reply(bot_instance, message, "⏳ <i>Verifying token and launching your cloned bot...</i>", parse_mode="HTML")
                 EXECUTOR.submit(launch_user_clone_bot, message, candidate_token)
                 return
             else:
-                AWAITING_BOT_TOKEN.discard(message.chat.id)
+                safe_reply(
+                    bot_instance,
+                    message,
+                    "⚠️ <b>Invalid token format.</b> Please send a valid Telegram bot token from @BotFather (e.g. <code>123456789:ABCdefGHIjkl...</code>).",
+                    parse_mode="HTML"
+                )
+                return
 
         # Explicit /ai command
         if text.startswith("/ai"):
@@ -2166,15 +2187,69 @@ def delete_cloned_bot(bot_id: str) -> None:
             save_data(CLONES_FILE, clones_db)
     ACTIVE_CLONES.pop(bot_id, None)
 
+def verify_telegram_bot_token(token: str) -> tuple[bool, dict[str, Any] | None, str | None]:
+    """Robust verification of bot tokens with rate-limit backoff and clean error reporting."""
+    clean_token = token.strip()
+    url = f"https://api.telegram.org/bot{clean_token}/getMe"
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+
+    for attempt in range(3):
+        try:
+            req = Request(url, headers=headers)
+            with urlopen(req, timeout=40) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("ok") and "result" in data:
+                    return True, data["result"], None
+                return False, None, data.get("description", "Unknown error from Telegram API.")
+        except HTTPError as he:
+            err_body = he.read().decode("utf-8", errors="ignore")
+            if he.code == 401:
+                return False, None, "Invalid Token: Telegram returned 401 Unauthorized. The token has been revoked or deleted in @BotFather."
+            elif he.code == 429:
+                try:
+                    p = json.loads(err_body).get("parameters", {})
+                    wait_sec = min(int(p.get("retry_after", 6)), 15)
+                except Exception:
+                    wait_sec = 6
+                log(f"Token verification rate limit (429); waiting {wait_sec}s before retry {attempt+1}/3...")
+                time.sleep(wait_sec)
+                continue
+            else:
+                return False, None, f"HTTP Error {he.code}: {err_body}"
+        except Exception as ex:
+            if attempt < 2:
+                time.sleep(2)
+                continue
+            return False, None, str(ex)
+
+    return False, None, "Verification timed out after multiple attempts."
+
 def launch_user_clone_bot(message: telebot.types.Message, token: str):
+    clean_token = token.strip()
     try:
-        test_bot = telebot.TeleBot(token, parse_mode=None)
-        me = test_bot.get_me()
-        bot_username = me.username
-        bot_id = str(me.id)
+        ok, me_info, err_msg = verify_telegram_bot_token(clean_token)
+        if not ok or not me_info:
+            safe_reply(
+                bot,
+                message,
+                f"❌ <b>Failed to launch bot:</b>\n<i>{escape(err_msg or 'Invalid token')}</i>\n\n"
+                f"💡 <i>Tip: Go to @BotFather, create a new bot with <code>/newbot</code> or send <code>/token</code> to get a fresh token.</i>",
+                parse_mode="HTML"
+            )
+            return
+
+        bot_username = me_info.get("username", "UnknownBot")
+        bot_id = str(me_info.get("id"))
+
+        # Stop any existing clone thread for this bot_id to avoid 409 Conflict
+        stop_cloned_bot(bot_id)
+        time.sleep(0.5)
+
+        test_bot = telebot.TeleBot(clean_token, parse_mode=None)
 
         try:
             test_bot.delete_webhook(drop_pending_updates=True)
+            time.sleep(0.5)
         except Exception:
             pass
 
@@ -2185,7 +2260,7 @@ def launch_user_clone_bot(message: telebot.types.Message, token: str):
             if not isinstance(clones_db, dict):
                 clones_db = {}
             clones_db[bot_id] = {
-                "token": token,
+                "token": clean_token,
                 "username": bot_username,
                 "owner_id": message.chat.id,
                 "owner_name": message.from_user.first_name,
@@ -2216,11 +2291,11 @@ def launch_user_clone_bot(message: telebot.types.Message, token: str):
             parse_mode="HTML"
         )
     except Exception as e:
-        log_error(f"Failed to clone bot with token {token[:10]}: {e}")
+        log_error(f"Failed to clone bot with token {clean_token[:10]}: {e}")
         safe_reply(
             bot,
             message,
-            f"❌ <b>Failed to launch bot:</b> Invalid token or Telegram refused connection.\n<i>Details: {escape(str(e))}</i>",
+            f"❌ <b>Failed to launch bot:</b>\n<i>Details: {escape(str(e))}</i>",
             parse_mode="HTML"
         )
 
@@ -2237,6 +2312,19 @@ def run_clone_polling(clone_bot: telebot.TeleBot, username: str, bot_id: str):
                 break
         try:
             clone_bot.infinity_polling(timeout=30, long_polling_timeout=20, skip_pending=True)
+        except telebot.apihelper.ApiTelegramException as api_err:
+            if bot_id in STOPPED_CLONES:
+                break
+            if api_err.error_code == 409:
+                log_error(f"Cloned bot @{username} 409 Conflict: another instance running. Retrying in 10s...")
+                time.sleep(10)
+            elif api_err.error_code == 429:
+                retry_after = getattr(api_err, "result_json", {}).get("parameters", {}).get("retry_after", 10)
+                log_error(f"Cloned bot @{username} rate limited (429); waiting {retry_after}s...")
+                time.sleep(retry_after)
+            else:
+                log_error(f"Cloned bot @{username} API error: {api_err}. Reconnecting in 5s...")
+                time.sleep(5)
         except Exception as err:
             if bot_id in STOPPED_CLONES:
                 break
