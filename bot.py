@@ -48,10 +48,17 @@ import yt_dlp
 
 # Force IPv4 resolution for Telegram APIs to prevent broken IPv6 blackholes/timeouts on Render/cloud
 _orig_getaddrinfo = socket.getaddrinfo
-def _patched_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-    if host and 'telegram.org' in host:
-        family = socket.AF_INET
-    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+def _patched_getaddrinfo(host, port, *args, **kwargs):
+    try:
+        host_str = host.decode("utf-8", errors="ignore") if isinstance(host, (bytes, bytearray)) else str(host or "")
+        if "telegram.org" in host_str:
+            if args:
+                args = (socket.AF_INET,) + args[1:]
+            else:
+                kwargs["family"] = socket.AF_INET
+    except Exception:
+        pass
+    return _orig_getaddrinfo(host, port, *args, **kwargs)
 socket.getaddrinfo = _patched_getaddrinfo
 
 # Set robust HTTP timeouts for telebot to prevent Read timed out (default 30s) on slow networks
@@ -62,7 +69,7 @@ telebot.apihelper.CONNECT_TIMEOUT = 25
 try:
     import static_ffmpeg
     static_ffmpeg.add_paths()
-except Exception:
+except BaseException:
     pass
 
 # ----------------- LOGGING CONFIGURATION ----------------- #
@@ -82,8 +89,10 @@ def log_error(message: str, *args: Any) -> None:
     sys.stderr.flush()
 
 # ----------------- CONFIGURATION ----------------- #
-MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAH34b3n0utVk3P-OQKHwgJbpl7cXX00tO0"psI).strip()
-ADMIN_ID = int(os.getenv("ADMIN_ID", "6162953772"))
+MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip() or "7678905793:AAH34b3n0utVk3P-OQKHwgJbpl7cXX00tO0"
+_raw_admin = os.getenv("ADMIN_ID", "6162953772").strip()
+_admin_digits = re.sub(r"[^\d]", "", _raw_admin)
+ADMIN_ID = int(_admin_digits) if _admin_digits else 6162953772
 
 # RapidAPI Integrations (Instagram Guaranteed Audio Autolink & Media Downloader)
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "8ab82c2a2fmshd7c1d7c96acc63fp170cfajsnd4d72661f86a").strip()
@@ -119,7 +128,7 @@ STOPPED_CLONES: set[str] = set()
 AWAITING_BOT_TOKEN: set[int] = set()
 
 # Asynchronous Admin Alert Queue (Guarantees zero 429 rate limit errors to Telegram)
-ADMIN_ALERT_QUEUE: queue.Queue[str] = queue.Queue(maxsize=300)
+ADMIN_ALERT_QUEUE = queue.Queue(maxsize=300)
 
 def admin_alert_worker() -> None:
     """Dedicated background worker to deliver admin alerts without blocking download threads or hitting Telegram 429s."""
@@ -2462,66 +2471,87 @@ def restore_saved_clones():
 
 # ----------------- MAIN INITIALIZATION ----------------- #
 if __name__ == "__main__":
-    print("=" * 65, flush=True)
-    print("🚀 7G Ultimate Master Bot is launching...", flush=True)
-    print(f"🤖 Primary Bot Token: {MAIN_BOT_TOKEN[:10]}...{MAIN_BOT_TOKEN[-6:]}", flush=True)
-    print(f"👑 Master Admin ID: {ADMIN_ID}", flush=True)
-    print("=" * 65, flush=True)
-
-    # 1. Register handlers for the Primary Master Bot (is_clone=False)
-    register_bot_handlers(bot, is_clone=False)
-
-    # 2. Start Asynchronous Rate-Limited Admin Alert Worker Thread
-    alert_thread = threading.Thread(target=admin_alert_worker, daemon=True, name="AdminAlertWorker")
-    alert_thread.start()
-
-    # 3. Start Flask Keep-Alive Web Server on 0.0.0.0:PORT
-    flask_thread = threading.Thread(target=run_flask, daemon=True, name="FlaskServerThread")
-    flask_thread.start()
-    time.sleep(1.5)
-
-    # 4. Start self-ping thread for Render free web service
-    ping_thread = threading.Thread(target=keep_alive_ping_loop, daemon=True, name="SelfPingThread")
-    ping_thread.start()
-
-    # 5. Clean webhook and drop pending update backlog
     try:
-        log("Clearing any webhook and pending updates for clean connection...")
-        bot.delete_webhook(drop_pending_updates=True)
-        time.sleep(1)
-        log("Webhook cleared successfully!")
-    except Exception as wh_err:
-        log_error(f"Webhook note: {wh_err}")
+        print("=" * 65, flush=True)
+        print("🚀 7G Ultimate Master Bot is launching...", flush=True)
+        print(f"🤖 Primary Bot Token: {MAIN_BOT_TOKEN[:10]}...{MAIN_BOT_TOKEN[-6:]}", flush=True)
+        print(f"👑 Master Admin ID: {ADMIN_ID}", flush=True)
+        print("=" * 65, flush=True)
 
-    # 6. Authenticate Master Bot
-    try:
-        master_info = bot.get_me()
-        log(f"✅ Master Bot Authenticated: @{master_info.username} (ID: {master_info.id}, Name: {master_info.first_name})")
-    except Exception as auth_err:
-        log_error(f"❌ Failed to authenticate Master Bot with Telegram: {auth_err}")
+        # 1. Start Flask Keep-Alive Web Server IMMEDIATELY on 0.0.0.0:PORT (Render health check passes instantly)
+        flask_thread = threading.Thread(target=run_flask, daemon=True, name="FlaskServerThread")
+        flask_thread.start()
+        time.sleep(1.0)
 
-    # 7. Restore all cloned bots in background threads
-    EXECUTOR.submit(restore_saved_clones)
+        # 2. Start Asynchronous Rate-Limited Admin Alert Worker Thread
+        alert_thread = threading.Thread(target=admin_alert_worker, daemon=True, name="AdminAlertWorker")
+        alert_thread.start()
 
-    # 8. Start Primary Bot Infinity Polling with High-Concurrency Resilience
-    log(">>> 7G MASTER BOT IS NOW FULLY ONLINE AND SERVING REQUESTS! <<<")
-    while True:
+        # 3. Start self-ping thread for Render free web service
+        ping_thread = threading.Thread(target=keep_alive_ping_loop, daemon=True, name="SelfPingThread")
+        ping_thread.start()
+
+        # 4. Register handlers for the Primary Master Bot (is_clone=False)
+        register_bot_handlers(bot, is_clone=False)
+
+        # 5. Clean webhook and drop pending update backlog
         try:
-            bot.infinity_polling(timeout=35, long_polling_timeout=25, skip_pending=False)
-        except telebot.apihelper.ApiTelegramException as api_err:
-            if api_err.error_code == 409:
-                log_error(
-                    "⚠️ TELEGRAM CONFLICT (Error 409): Another instance is running with this token! "
-                    "Please stop the old bot instance on your PC or previous server. Retrying in 10s..."
-                )
-                time.sleep(10)
-            elif api_err.error_code == 429:
-                retry_after = getattr(api_err, "result_json", {}).get("parameters", {}).get("retry_after", 5)
-                log_error(f"Master Bot rate limited (429); waiting {retry_after}s...")
-                time.sleep(retry_after)
-            else:
-                log_error(f"Telegram API Exception: {api_err}. Retrying in 5s...")
+            log("Clearing any webhook and pending updates for clean connection...")
+            bot.delete_webhook(drop_pending_updates=True)
+            time.sleep(1)
+            log("Webhook cleared successfully!")
+        except Exception as wh_err:
+            log_error(f"Webhook note: {wh_err}")
+
+        # 6. Authenticate Master Bot
+        try:
+            master_info = bot.get_me()
+            log(f"✅ Master Bot Authenticated: @{master_info.username} (ID: {master_info.id}, Name: {master_info.first_name})")
+        except Exception as auth_err:
+            log_error(
+                f"⚠️ Note: Failed to verify bot token with Telegram ({auth_err}). "
+                f"If you changed or revoked the token in @BotFather, please set BOT_TOKEN in your Render Environment Variables!"
+            )
+
+        # 7. Restore all cloned bots in background threads
+        EXECUTOR.submit(restore_saved_clones)
+
+        # 8. Start Primary Bot Infinity Polling with High-Concurrency Resilience
+        log(">>> 7G MASTER BOT IS NOW FULLY ONLINE AND SERVING REQUESTS! <<<")
+        while True:
+            try:
+                bot.infinity_polling(timeout=35, long_polling_timeout=25, skip_pending=False)
+            except telebot.apihelper.ApiTelegramException as api_err:
+                if api_err.error_code == 409:
+                    log_error(
+                        "⚠️ TELEGRAM CONFLICT (Error 409): Another instance is running with this token! "
+                        "Please stop the old bot instance on your PC or previous server. Retrying in 10s..."
+                    )
+                    time.sleep(10)
+                elif api_err.error_code == 401:
+                    log_error(
+                        "❌ TELEGRAM AUTHENTICATION ERROR (401 Unauthorized): The BOT_TOKEN is invalid or revoked! "
+                        "Please copy your fresh token from @BotFather and add it to Render Environment variables as BOT_TOKEN. "
+                        "Retrying in 25s..."
+                    )
+                    time.sleep(25)
+                elif api_err.error_code == 429:
+                    retry_after = getattr(api_err, "result_json", {}).get("parameters", {}).get("retry_after", 5)
+                    log_error(f"Master Bot rate limited (429); waiting {retry_after}s...")
+                    time.sleep(retry_after)
+                else:
+                    log_error(f"Telegram API Exception: {api_err}. Retrying in 5s...")
+                    time.sleep(5)
+            except Exception as error:
+                log_error(f"Bot polling exception ({type(error).__name__}: {error}). Reconnecting in 5s...")
                 time.sleep(5)
-        except Exception as error:
-            log_error(f"Bot polling exception ({type(error).__name__}: {error}). Reconnecting in 5s...")
-            time.sleep(5)
+    except BaseException as fatal_err:
+        import traceback
+        log_error("Critical startup exception caught: %s", fatal_err)
+        traceback.print_exc(file=sys.stdout)
+        traceback.print_exc(file=sys.stderr)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        # Keep process alive so Render web service does not exit with status 1
+        while True:
+            time.sleep(10)
