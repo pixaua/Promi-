@@ -2,7 +2,7 @@
 =============================================================================
 7G ULTIMATE TELEGRAM MASTER BOT (ENTERPRISE PRODUCTION EDITION)
 =============================================================================
-Primary Token: 7678905793:AAHu3CkPG-GSf42SGLf9PM5hccL8HIIsftY
+Primary Token: 7678905793:AAH34b3n0utVk3P-OQKHwgJbpl7cXX00tO0
 Master Admin ID: 6162953772
 RapidAPI Key: 8ab82c2a2fmshd7c1d7c96acc63fp170cfajsnd4d72661f86a
 Meta AI API Key: nxt_3a454c41e6a84aeead28d1fb4aec87a4
@@ -16,8 +16,10 @@ import html
 import json
 import logging
 import os
+import queue
 import random
 import re
+import subprocess
 import sys
 import tempfile
 import threading
@@ -80,7 +82,7 @@ def log_error(message: str, *args: Any) -> None:
     sys.stderr.flush()
 
 # ----------------- CONFIGURATION ----------------- #
-MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAHu3CkPG-GSf42SGLf9PM5hccL8HIIsftY").strip()
+MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "7678905793:AAH34b3n0utVk3P-OQKHwgJbpl7cXX00tO0"psI).strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6162953772"))
 
 # RapidAPI Integrations (Instagram Guaranteed Audio Autolink & Media Downloader)
@@ -109,12 +111,44 @@ BANNED_FILE = os.path.join(DATA_DIR, "banned_users.json")
 CONFIG_FILE = os.path.join(DATA_DIR, "bot_config.json")
 CLONES_FILE = os.path.join(DATA_DIR, "clones_db.json")
 
-# State & Concurrency (Optimized for High Speed)
+# State & Concurrency (Scaled for 100+ High-Concurrency Users)
 FILE_LOCK = threading.RLock()
-EXECUTOR = ThreadPoolExecutor(max_workers=15, thread_name_prefix="7g_fast_worker")
+EXECUTOR = ThreadPoolExecutor(max_workers=50, thread_name_prefix="7g_fast_worker")
 ACTIVE_CLONES: dict[str, telebot.TeleBot] = {}
 STOPPED_CLONES: set[str] = set()
 AWAITING_BOT_TOKEN: set[int] = set()
+
+# Asynchronous Admin Alert Queue (Guarantees zero 429 rate limit errors to Telegram)
+ADMIN_ALERT_QUEUE: queue.Queue[str] = queue.Queue(maxsize=300)
+
+def admin_alert_worker() -> None:
+    """Dedicated background worker to deliver admin alerts without blocking download threads or hitting Telegram 429s."""
+    while True:
+        try:
+            alert_msg = ADMIN_ALERT_QUEUE.get()
+            if alert_msg is None:
+                break
+            try:
+                bot.send_message(ADMIN_ID, alert_msg, parse_mode="HTML")
+            except telebot.apihelper.ApiTelegramException as api_err:
+                if api_err.error_code == 429:
+                    wait_sec = getattr(api_err, "result_json", {}).get("parameters", {}).get("retry_after", 3)
+                    time.sleep(wait_sec + 0.5)
+                    try:
+                        bot.send_message(ADMIN_ID, alert_msg, parse_mode="HTML")
+                    except Exception:
+                        pass
+                else:
+                    log_error(f"Telegram alert delivery note: {api_err}")
+            except Exception as e:
+                log_error(f"Alert delivery error: {e}")
+            finally:
+                ADMIN_ALERT_QUEUE.task_done()
+                # Respect Telegram rate limit of max 1 message/sec per private chat
+                time.sleep(1.1)
+        except Exception as q_err:
+            log_error(f"Admin alert worker error: {q_err}")
+            time.sleep(1.0)
 
 # Pending Downloads Cache
 DOWNLOAD_CACHE: dict[str, dict[str, Any]] = {}
@@ -398,6 +432,10 @@ def send_admin_alert(
     user_info: dict[str, Any]
 ) -> None:
     try:
+        # Load-shedding under heavy concurrency: if queue has >60 pending alerts, only enqueue downloads and errors
+        if ADMIN_ALERT_QUEUE.qsize() > 60 and "Download" not in action_type and "Error" not in action_type:
+            return
+
         preview_data = text_data[:240] + ("..." if len(text_data) > 240 else "")
         alert_msg = (
             f"🚨 <b>New Activity Alert!</b>\n"
@@ -409,11 +447,76 @@ def send_admin_alert(
             f"📌 <b>Data:</b> <code>{escape(preview_data)}</code>\n"
             f"🕒 <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>"
         )
-        bot.send_message(ADMIN_ID, alert_msg, parse_mode="HTML")
+        if not ADMIN_ALERT_QUEUE.full():
+            ADMIN_ALERT_QUEUE.put_nowait(alert_msg)
     except Exception as e:
-        log_error("Failed to send admin activity alert: %s", e)
+        log_error("Failed to enqueue admin activity alert: %s", e)
 
 # ----------------- ADVANCED DOWNLOAD & EXTRACTION UTILITIES ----------------- #
+
+# Maximum allowed raw download size (160 MB). Files > 48.5MB are auto-compressed via FFmpeg under Telegram's 50MB limit!
+MAX_DOWNLOAD_BYTES = 160 * 1024 * 1024
+
+def compress_media_for_telegram(input_path: str, is_audio: bool = False, max_target_mb: float = 48.0) -> str:
+    """
+    Automatically compresses oversized media (>48MB) down to under Telegram's 50MB limit
+    using ultra-fast FFmpeg. Enables smooth delivery for large YouTube, Facebook, and TikTok media.
+    """
+    if not input_path or not os.path.exists(input_path):
+        return input_path
+
+    file_size_mb = os.path.getsize(input_path) / (1024 * 1024)
+    if file_size_mb <= max_target_mb:
+        return input_path
+
+    log(f"Media exceeds {max_target_mb}MB ({file_size_mb:.1f}MB); initiating automatic FFmpeg compression...")
+    out_suffix = ".mp3" if is_audio else ".mp4"
+    out_tmp = tempfile.NamedTemporaryFile(suffix=out_suffix, delete=False).name
+    try:
+        if is_audio:
+            bitrate = "64k" if file_size_mb > 90 else "96k"
+            cmd = [
+                "ffmpeg", "-y", "-i", input_path,
+                "-c:a", "libmp3lame", "-b:a", bitrate, "-ac", "2",
+                out_tmp
+            ]
+        else:
+            if file_size_mb > 90:
+                scale_vf = "scale=-2:min(480\\,ih)"
+                crf_val = "30"
+            else:
+                scale_vf = "scale=-2:min(720\\,ih)"
+                crf_val = "28"
+
+            cmd = [
+                "ffmpeg", "-y", "-i", input_path,
+                "-vf", scale_vf,
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", crf_val,
+                "-c:a", "aac", "-b:a", "96k",
+                "-movflags", "+faststart",
+                out_tmp
+            ]
+
+        proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180)
+        if proc.returncode == 0 and os.path.exists(out_tmp) and os.path.getsize(out_tmp) > 1000:
+            comp_sz_mb = os.path.getsize(out_tmp) / (1024 * 1024)
+            log(f"Compression success: {file_size_mb:.1f}MB -> {comp_sz_mb:.1f}MB")
+            try:
+                os.remove(input_path)
+            except Exception:
+                pass
+            return out_tmp
+        else:
+            log_error(f"FFmpeg compression exited with code {proc.returncode}")
+    except Exception as comp_err:
+        log_error(f"Media compression failed: {comp_err}")
+
+    if os.path.exists(out_tmp):
+        try:
+            os.remove(out_tmp)
+        except Exception:
+            pass
+    return input_path
 
 def download_to_temp_file(
     media_url: str,
@@ -421,7 +524,7 @@ def download_to_temp_file(
     referer: str | None = None,
     progress_callback: Callable[[int], None] | None = None
 ) -> str | None:
-    """Safely downloads media streams to a temporary file under Telegram's 50MB limit with live percentage updates."""
+    """Safely downloads media streams to a temporary file (up to 160MB, compressed later if >48MB) with live percentage updates."""
     headers = {"User-Agent": USER_AGENT, "Accept": "*/*"}
     if referer:
         headers["Referer"] = referer
@@ -443,8 +546,8 @@ def download_to_temp_file(
                         break
                     tmp.write(chunk)
                     total_bytes += len(chunk)
-                    if total_bytes > 49.5 * 1024 * 1024:
-                        log_error("Downloaded file exceeded Telegram 50MB limit.")
+                    if total_bytes > MAX_DOWNLOAD_BYTES:
+                        log_error("Downloaded file exceeded maximum allowed 160MB limit.")
                         break
 
                     if progress_callback:
@@ -452,7 +555,7 @@ def download_to_temp_file(
                             pct = min(95, int(15 + (total_bytes / total_expected) * 80))
                         else:
                             mb = total_bytes / (1024 * 1024)
-                            pct = min(95, int(15 + mb * 6))
+                            pct = min(95, int(15 + mb * 3))
                         if pct >= last_pct_reported + 8:
                             last_pct_reported = pct
                             try:
@@ -462,7 +565,7 @@ def download_to_temp_file(
 
         if tmp_path and os.path.exists(tmp_path):
             file_sz = os.path.getsize(tmp_path)
-            if total_bytes > 49.5 * 1024 * 1024:
+            if total_bytes > MAX_DOWNLOAD_BYTES:
                 try:
                     os.remove(tmp_path)
                 except Exception:
@@ -622,21 +725,25 @@ def download_tiktok(url: str, extract_audio: bool = False, progress_callback: Ca
     base_clean_url = m.group(0) if m else clean_url.split("?")[0]
 
     # Resolve short-links (vt.tiktok.com, vm.tiktok.com)
+    expanded_url = clean_url
     if "vt.tiktok.com" in clean_url or "vm.tiktok.com" in clean_url:
         try:
             head_req = Request(clean_url, headers={"User-Agent": USER_AGENT})
-            with urlopen(head_req, timeout=10) as head_resp:
+            with urlopen(head_req, timeout=12) as head_resp:
                 if head_resp.url and "tiktok.com" in head_resp.url:
-                    clean_url = head_resp.url
-                    m2 = re.search(r'https?://(?:www\.|vt\.|vm\.|m\.)?tiktok\.com/[^\s\?]+', clean_url)
-                    base_clean_url = m2.group(0) if m2 else clean_url.split("?")[0]
+                    expanded_url = head_resp.url
         except Exception:
             pass
+
+    target_urls = []
+    for u in [clean_url, expanded_url, base_clean_url]:
+        if u and u not in target_urls:
+            target_urls.append(u)
 
     # Tier 1: TikWM Direct API (High-speed, No Watermark, Studio Audio)
     tikwm_endpoints = ["https://www.tikwm.com/api/", "https://tikwm.com/api/"]
     for endpoint in tikwm_endpoints:
-        for target_u in [clean_url, base_clean_url]:
+        for target_u in target_urls:
             try:
                 post_data = urlencode({"url": target_u, "hd": 1}).encode("utf-8")
                 req = Request(
@@ -657,96 +764,78 @@ def download_tiktok(url: str, extract_audio: bool = False, progress_callback: Ca
                             if music_url:
                                 if music_url.startswith("/"):
                                     music_url = f"https://www.tikwm.com{music_url}"
-                                tmp_file = download_to_temp_file(music_url, suffix=".mp3", progress_callback=progress_callback)
+                                tmp_file = download_to_temp_file(music_url, suffix=".mp3", referer="https://www.tiktok.com/", progress_callback=progress_callback)
                                 if tmp_file:
                                     return title, tmp_file
                     else:
-                        # Try HD play, then standard play, then wmplay
                         video_candidates = [data.get("hdplay"), data.get("play"), data.get("wmplay")]
                         for v_url in video_candidates:
                             if v_url:
                                 if v_url.startswith("/"):
                                     v_url = f"https://www.tikwm.com{v_url}"
-                                tmp_file = download_to_temp_file(v_url, suffix=".mp4", progress_callback=progress_callback)
+                                tmp_file = download_to_temp_file(v_url, suffix=".mp4", referer="https://www.tiktok.com/", progress_callback=progress_callback)
                                 if tmp_file:
                                     return title, tmp_file
             except Exception as e:
                 log_error(f"TikWM attempt error on {endpoint}: {e}")
 
-    # Tier 2: RapidAPI Social Download All-in-One (Backup High-Speed Pipeline)
+    # Tier 2: RapidAPI Social Download All-in-One (Autolink HD Direct)
     if RAPIDAPI_KEY:
-        try:
-            rapid_headers = {
-                "x-rapidapi-key": RAPIDAPI_KEY,
-                "x-rapidapi-host": RAPIDAPI_IG_HOST,
-                "Content-Type": "application/json",
-                "User-Agent": USER_AGENT,
-                "Accept": "application/json"
-            }
-            req = Request(
-                f"https://{RAPIDAPI_IG_HOST}/v1/social/autolink",
-                data=json.dumps({"url": clean_url}).encode("utf-8"),
-                headers=rapid_headers,
-                method="POST"
-            )
-            with urlopen(req, timeout=12) as res:
-                rdata = json.loads(res.read().decode("utf-8"))
+        for target_u in target_urls:
+            try:
+                rapid_headers = {
+                    "x-rapidapi-key": RAPIDAPI_KEY,
+                    "x-rapidapi-host": RAPIDAPI_IG_HOST,
+                    "Content-Type": "application/json",
+                    "User-Agent": USER_AGENT,
+                    "Accept": "application/json"
+                }
+                req = Request(
+                    f"https://{RAPIDAPI_IG_HOST}/v1/social/autolink",
+                    data=json.dumps({"url": target_u}).encode("utf-8"),
+                    headers=rapid_headers,
+                    method="POST"
+                )
+                with urlopen(req, timeout=12) as res:
+                    rdata = json.loads(res.read().decode("utf-8"))
 
-            if isinstance(rdata, dict):
-                title = rdata.get("title") or "TikTok Media"
-                medias = rdata.get("medias", [])
-                if isinstance(medias, list) and medias:
-                    if extract_audio:
-                        for m_item in medias:
-                            if isinstance(m_item, dict) and (m_item.get("type") == "audio" or "audio" in m_item.get("quality", "").lower()):
-                                if m_item.get("url"):
-                                    tmp_f = download_to_temp_file(m_item.get("url"), suffix=".mp3", progress_callback=progress_callback)
+                if isinstance(rdata, dict):
+                    title = rdata.get("title") or "TikTok Media"
+                    medias = rdata.get("medias", [])
+                    if isinstance(medias, list) and medias:
+                        if extract_audio:
+                            for m_item in medias:
+                                if isinstance(m_item, dict) and (m_item.get("type") == "audio" or "audio" in m_item.get("quality", "").lower()):
+                                    if m_item.get("url"):
+                                        tmp_f = download_to_temp_file(m_item.get("url"), suffix=".mp3", referer="https://www.tiktok.com/", progress_callback=progress_callback)
+                                        if tmp_f:
+                                            return title, tmp_f
+                        else:
+                            for m_item in medias:
+                                if isinstance(m_item, dict) and m_item.get("type") == "video" and m_item.get("url"):
+                                    tmp_f = download_to_temp_file(m_item.get("url"), suffix=".mp4", referer="https://www.tiktok.com/", progress_callback=progress_callback)
                                     if tmp_f:
                                         return title, tmp_f
-                    else:
-                        best_vid = None
-                        for m_item in medias:
-                            if isinstance(m_item, dict) and m_item.get("type") == "video":
-                                q = m_item.get("quality", "").lower()
-                                if "hd" in q or "no_watermark" in q:
-                                    best_vid = m_item.get("url")
-                                    break
-                                elif not best_vid:
-                                    best_vid = m_item.get("url")
-                        if best_vid:
-                            tmp_f = download_to_temp_file(best_vid, suffix=".mp4", progress_callback=progress_callback)
-                            if tmp_f:
-                                return title, tmp_f
-        except Exception as rapid_tt_err:
-            log_error(f"RapidAPI TikTok fallback error: {rapid_tt_err}")
+            except Exception as rapid_tt_err:
+                log_error(f"RapidAPI TikTok fallback error: {rapid_tt_err}")
 
     # Tier 3: yt-dlp Native Direct Downloader
     try:
         temp_dir = tempfile.gettempdir()
         prefix = f"tt_{uuid.uuid4().hex[:8]}"
         out_tmpl = os.path.join(temp_dir, f"{prefix}.%(ext)s")
-        if extract_audio:
-            ydl_opts = {
-                'format': 'bestaudio[ext=m4a]/bestaudio/best',
-                'outtmpl': out_tmpl,
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 20,
-                'nocheckcertificate': True,
-                'source_address': '0.0.0.0',
-            }
-        else:
-            ydl_opts = {
-                'format': 'best[ext=mp4]/best/bestvideo+bestaudio',
-                'outtmpl': out_tmpl,
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 20,
-                'nocheckcertificate': True,
-                'source_address': '0.0.0.0',
-            }
+        ydl_format = 'bestaudio[ext=m4a]/bestaudio/best' if extract_audio else 'best[ext=mp4]/best/bestvideo+bestaudio'
+        ydl_opts = {
+            'format': ydl_format,
+            'outtmpl': out_tmpl,
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 25,
+            'nocheckcertificate': True,
+            'source_address': '0.0.0.0',
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(clean_url, download=True)
+            info = ydl.extract_info(expanded_url or clean_url, download=True)
             if info:
                 title = info.get("title") or "TikTok Video"
                 candidate_path = ydl.prepare_filename(info)
@@ -788,13 +877,11 @@ def download_youtube_cloud_stream(
     endpoints = [
         {
             "init": "https://p.savenow.to/ajax/download.php?format={fmt}&url={url}",
-            "prog": "https://p.savenow.to/api/progress?id={id}",
             "ref": "https://p.savenow.to/",
             "origin": "https://p.savenow.to"
         },
         {
             "init": "https://loader.to/ajax/download.php?format={fmt}&url={url}",
-            "prog": "https://loader.to/ajax/progress.php?id={id}",
             "ref": "https://loader.to/",
             "origin": "https://loader.to"
         }
@@ -819,6 +906,8 @@ def download_youtube_cloud_stream(
                 title = data.get("title") or default_title
                 if not job_id:
                     continue
+                # Dynamic progress URL returned by CDN
+                prog_url = data.get("progress_url") or f"{ep['ref']}api/progress?id={job_id}"
 
             if progress_callback:
                 try:
@@ -826,21 +915,21 @@ def download_youtube_cloud_stream(
                 except Exception:
                     pass
 
-            # Poll up to 16 iterations (~24 seconds)
-            for i in range(16):
+            # Poll up to 30 iterations (~45 seconds) with live progress feedback
+            for i in range(30):
                 time.sleep(1.5)
-                if progress_callback and i % 3 == 0:
+                if progress_callback:
+                    pct_val = min(88, 15 + int(i * 2.5))
                     try:
-                        progress_callback(min(35, 15 + i * 2))
+                        progress_callback(pct_val)
                     except Exception:
                         pass
 
-                prog_url = ep["prog"].format(id=job_id)
                 preq = Request(prog_url, headers=headers)
                 with urlopen(preq, timeout=10) as pres:
                     pdata = json.loads(pres.read().decode("utf-8"))
                     download_url = pdata.get("download_url")
-                    is_ready = download_url and (pdata.get("success") == 1 or pdata.get("progress", 0) >= 1000 or pdata.get("download_url"))
+                    is_ready = bool(download_url) and (pdata.get("success") == 1 or pdata.get("progress", 0) >= 1000 or bool(download_url))
                     if is_ready:
                         suffix = ".mp3" if format_type == "mp3" else ".mp4"
                         tmp_f = download_to_temp_file(
@@ -893,13 +982,7 @@ def download_youtube(
             progress_callback=progress_callback
         )
         if t1_file_720 and os.path.exists(t1_file_720) and os.path.getsize(t1_file_720) > 1000:
-            if os.path.getsize(t1_file_720) <= 49.5 * 1024 * 1024:
-                return t1_title_720, t1_file_720
-            else:
-                try:
-                    os.remove(t1_file_720)
-                except Exception:
-                    pass
+            return t1_title_720, t1_file_720
 
         # Second attempt: 360p (Guaranteed under 50MB, fast and crystal clear on Telegram)
         t1_title_360, t1_file_360 = download_youtube_cloud_stream(
@@ -1240,10 +1323,28 @@ def process_download_execution(
         if os.path.isfile(file_path):
             local_file = file_path
             file_size_mb = os.path.getsize(local_file) / (1024 * 1024)
+
+            # Auto-compress if > 48.5MB to guarantee Telegram delivery
+            if file_size_mb > 48.5:
+                try:
+                    bot_instance.edit_message_text(
+                        f"🔄 <b>Optimizing media size ({file_size_mb:.1f} MB)...</b>\n"
+                        f"<i>Compressing for seamless Telegram delivery under 50MB 🚀</i>",
+                        chat_id,
+                        status_msg_id,
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+
+                compressed_file = compress_media_for_telegram(local_file, is_audio=extract_audio, max_target_mb=48.0)
+                local_file = compressed_file
+                file_size_mb = os.path.getsize(local_file) / (1024 * 1024)
+
             if file_size_mb > 49.9:
                 bot_instance.edit_message_text(
                     f"⚠️ <b>File Exceeds Limit:</b>\n"
-                    f"This file is {file_size_mb:.1f} MB. Telegram Bot API only supports files up to 50MB.",
+                    f"This file is {file_size_mb:.1f} MB even after optimization. Telegram Bot API only supports files up to 50MB.",
                     chat_id,
                     status_msg_id,
                     parse_mode="HTML"
@@ -2370,16 +2471,20 @@ if __name__ == "__main__":
     # 1. Register handlers for the Primary Master Bot (is_clone=False)
     register_bot_handlers(bot, is_clone=False)
 
-    # 2. Start Flask Keep-Alive Web Server on 0.0.0.0:PORT
+    # 2. Start Asynchronous Rate-Limited Admin Alert Worker Thread
+    alert_thread = threading.Thread(target=admin_alert_worker, daemon=True, name="AdminAlertWorker")
+    alert_thread.start()
+
+    # 3. Start Flask Keep-Alive Web Server on 0.0.0.0:PORT
     flask_thread = threading.Thread(target=run_flask, daemon=True, name="FlaskServerThread")
     flask_thread.start()
     time.sleep(1.5)
 
-    # 3. Start self-ping thread for Render free web service
+    # 4. Start self-ping thread for Render free web service
     ping_thread = threading.Thread(target=keep_alive_ping_loop, daemon=True, name="SelfPingThread")
     ping_thread.start()
 
-    # 4. Clean webhook and drop pending update backlog
+    # 5. Clean webhook and drop pending update backlog
     try:
         log("Clearing any webhook and pending updates for clean connection...")
         bot.delete_webhook(drop_pending_updates=True)
@@ -2388,21 +2493,21 @@ if __name__ == "__main__":
     except Exception as wh_err:
         log_error(f"Webhook note: {wh_err}")
 
-    # 5. Authenticate Master Bot
+    # 6. Authenticate Master Bot
     try:
         master_info = bot.get_me()
         log(f"✅ Master Bot Authenticated: @{master_info.username} (ID: {master_info.id}, Name: {master_info.first_name})")
     except Exception as auth_err:
         log_error(f"❌ Failed to authenticate Master Bot with Telegram: {auth_err}")
 
-    # 6. Restore all cloned bots in background threads
+    # 7. Restore all cloned bots in background threads
     EXECUTOR.submit(restore_saved_clones)
 
-    # 7. Start Primary Bot Infinity Polling with Resilience
+    # 8. Start Primary Bot Infinity Polling with High-Concurrency Resilience
     log(">>> 7G MASTER BOT IS NOW FULLY ONLINE AND SERVING REQUESTS! <<<")
     while True:
         try:
-            bot.infinity_polling(timeout=30, long_polling_timeout=20, skip_pending=False)
+            bot.infinity_polling(timeout=35, long_polling_timeout=25, skip_pending=False)
         except telebot.apihelper.ApiTelegramException as api_err:
             if api_err.error_code == 409:
                 log_error(
@@ -2410,9 +2515,13 @@ if __name__ == "__main__":
                     "Please stop the old bot instance on your PC or previous server. Retrying in 10s..."
                 )
                 time.sleep(10)
+            elif api_err.error_code == 429:
+                retry_after = getattr(api_err, "result_json", {}).get("parameters", {}).get("retry_after", 5)
+                log_error(f"Master Bot rate limited (429); waiting {retry_after}s...")
+                time.sleep(retry_after)
             else:
                 log_error(f"Telegram API Exception: {api_err}. Retrying in 5s...")
                 time.sleep(5)
         except Exception as error:
-            log_error(f"Bot polling error: {error}. Reconnecting in 5s...")
+            log_error(f"Bot polling exception ({type(error).__name__}: {error}). Reconnecting in 5s...")
             time.sleep(5)
