@@ -2,7 +2,7 @@
 =============================================================================
 7G ULTIMATE TELEGRAM MASTER BOT (ENTERPRISE PRODUCTION EDITION)
 =============================================================================
-Primary Token: 7678905793:AAH34b3n0utVk3P-OQKHwgJbpl7cXX00tO0
+Primary Token: 7678905793:AAEkIWUFK7gmyf1kMLark8uU3hk3ojTnSB0
 Master Admin ID: 6162953772
 RapidAPI Key: 8ab82c2a2fmshd7c1d7c96acc63fp170cfajsnd4d72661f86a
 Meta AI API Key: nxt_3a454c41e6a84aeead28d1fb4aec87a4
@@ -89,7 +89,7 @@ def log_error(message: str, *args: Any) -> None:
     sys.stderr.flush()
 
 # ----------------- CONFIGURATION ----------------- #
-MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip() or "7678905793:AAH34b3n0utVk3P-OQKHwgJbpl7cXX00tO0"
+MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip() or "7678905793:AAEkIWUFK7gmyf1kMLark8uU3hk3ojTnSB0"
 _raw_admin = os.getenv("ADMIN_ID", "6162953772").strip()
 _admin_digits = re.sub(r"[^\d]", "", _raw_admin)
 ADMIN_ID = int(_admin_digits) if _admin_digits else 6162953772
@@ -98,6 +98,16 @@ ADMIN_ID = int(_admin_digits) if _admin_digits else 6162953772
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "8ab82c2a2fmshd7c1d7c96acc63fp170cfajsnd4d72661f86a").strip()
 RAPIDAPI_IG_HOST = "social-download-all-in-one.p.rapidapi.com"
 RAPIDAPI_YT_HOST = "youtube-media-downloader.p.rapidapi.com"
+
+# YouTube Cookies persistence (Supports env var or local cookies.txt file)
+_env_cookies = os.getenv("YOUTUBE_COOKIES", "").strip() or os.getenv("COOKIES_TXT", "").strip()
+if _env_cookies and not os.path.exists("cookies.txt"):
+    try:
+        with open("cookies.txt", "w", encoding="utf-8") as _cf:
+            _cf.write(_env_cookies)
+        log("Saved cookies from environment variable into cookies.txt")
+    except Exception as _ce:
+        log_error(f"Could not write cookies.txt: {_ce}")
 
 META_AI_KEY = os.getenv("META_AI_API_KEY", "nxt_3a454c41e6a84aeead28d1fb4aec87a4").strip()
 META_AI_GEM_ID = os.getenv("META_AI_GEM_ID", "ba0fbe0d-976e-493a-afdb-6d8469e53df0")
@@ -463,13 +473,14 @@ def send_admin_alert(
 
 # ----------------- ADVANCED DOWNLOAD & EXTRACTION UTILITIES ----------------- #
 
-# Maximum allowed raw download size (160 MB). Files > 48.5MB are auto-compressed via FFmpeg under Telegram's 50MB limit!
-MAX_DOWNLOAD_BYTES = 160 * 1024 * 1024
+# Maximum allowed raw download size (250 MB). Files > 48.5MB are auto-compressed via FFmpeg under Telegram's 50MB limit!
+MAX_DOWNLOAD_BYTES = 250 * 1024 * 1024
 
 def compress_media_for_telegram(input_path: str, is_audio: bool = False, max_target_mb: float = 48.0) -> str:
     """
     Automatically compresses oversized media (>48MB) down to under Telegram's 50MB limit
-    using ultra-fast FFmpeg. Enables smooth delivery for large YouTube, Facebook, and TikTok media.
+    using ultra-fast FFmpeg with dynamic bitrate estimation.
+    Enables smooth delivery for large movies, dramas, YouTube videos, and Facebook media.
     """
     if not input_path or not os.path.exists(input_path):
         return input_path
@@ -481,40 +492,95 @@ def compress_media_for_telegram(input_path: str, is_audio: bool = False, max_tar
     log(f"Media exceeds {max_target_mb}MB ({file_size_mb:.1f}MB); initiating automatic FFmpeg compression...")
     out_suffix = ".mp3" if is_audio else ".mp4"
     out_tmp = tempfile.NamedTemporaryFile(suffix=out_suffix, delete=False).name
+
+    # Probe duration to compute exact bitrate target
+    duration_sec = 0.0
+    try:
+        probe_cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            input_path
+        ]
+        probe_res = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=12)
+        if probe_res.stdout and probe_res.stdout.strip():
+            duration_sec = float(probe_res.stdout.strip())
+    except Exception as pr_err:
+        log_error(f"ffprobe duration probe note: {pr_err}")
+
     try:
         if is_audio:
-            bitrate = "64k" if file_size_mb > 90 else "96k"
+            if duration_sec > 0:
+                calc_kbps = int((44.0 * 8192) / duration_sec)
+                bitrate_str = f"{min(128, max(32, calc_kbps))}k"
+            else:
+                bitrate_str = "64k" if file_size_mb > 90 else "96k"
+
             cmd = [
                 "ffmpeg", "-y", "-i", input_path,
-                "-c:a", "libmp3lame", "-b:a", bitrate, "-ac", "2",
+                "-c:a", "libmp3lame", "-b:a", bitrate_str, "-ac", "2",
                 out_tmp
             ]
         else:
-            if file_size_mb > 90:
-                scale_vf = "scale=-2:min(480\\,ih)"
-                crf_val = "30"
+            if duration_sec > 0:
+                total_target_kbps = int((43.5 * 8192) / duration_sec)
+                audio_kbps = 64 if total_target_kbps < 350 else 96
+                video_kbps = max(80, total_target_kbps - audio_kbps)
+                scale_vf = "scale=-2:min(480\\,ih)" if (file_size_mb > 90 or total_target_kbps < 600) else "scale=-2:min(720\\,ih)"
+                cmd = [
+                    "ffmpeg", "-y", "-i", input_path,
+                    "-vf", scale_vf,
+                    "-c:v", "libx264", "-preset", "veryfast",
+                    "-b:v", f"{video_kbps}k", "-maxrate", f"{int(video_kbps * 1.3)}k", "-bufsize", f"{int(video_kbps * 2)}k",
+                    "-c:a", "aac", "-b:a", f"{audio_kbps}k",
+                    "-movflags", "+faststart",
+                    out_tmp
+                ]
             else:
-                scale_vf = "scale=-2:min(720\\,ih)"
-                crf_val = "28"
+                scale_vf = "scale=-2:min(480\\,ih)" if file_size_mb > 90 else "scale=-2:min(720\\,ih)"
+                crf_val = "31" if file_size_mb > 110 else "28"
+                cmd = [
+                    "ffmpeg", "-y", "-i", input_path,
+                    "-vf", scale_vf,
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", crf_val,
+                    "-c:a", "aac", "-b:a", "80k",
+                    "-movflags", "+faststart",
+                    out_tmp
+                ]
 
-            cmd = [
-                "ffmpeg", "-y", "-i", input_path,
-                "-vf", scale_vf,
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", crf_val,
-                "-c:a", "aac", "-b:a", "96k",
-                "-movflags", "+faststart",
-                out_tmp
-            ]
-
-        proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180)
+        proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=240)
         if proc.returncode == 0 and os.path.exists(out_tmp) and os.path.getsize(out_tmp) > 1000:
             comp_sz_mb = os.path.getsize(out_tmp) / (1024 * 1024)
             log(f"Compression success: {file_size_mb:.1f}MB -> {comp_sz_mb:.1f}MB")
-            try:
-                os.remove(input_path)
-            except Exception:
-                pass
-            return out_tmp
+            if comp_sz_mb <= 49.5:
+                try:
+                    os.remove(input_path)
+                except Exception:
+                    pass
+                return out_tmp
+            else:
+                # If still slightly above 49.5MB, run ultra-compact fallback pass
+                log("First pass exceeded 49.5MB; initiating compact fallback pass...")
+                fallback_tmp = tempfile.NamedTemporaryFile(suffix=out_suffix, delete=False).name
+                fallback_cmd = [
+                    "ffmpeg", "-y", "-i", out_tmp,
+                    "-vf", "scale=-2:min(360\\,ih)",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "33",
+                    "-c:a", "aac", "-b:a", "64k",
+                    "-movflags", "+faststart",
+                    fallback_tmp
+                ]
+                fproc = subprocess.run(fallback_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180)
+                try:
+                    os.remove(out_tmp)
+                except Exception:
+                    pass
+                if fproc.returncode == 0 and os.path.exists(fallback_tmp) and os.path.getsize(fallback_tmp) > 1000:
+                    try:
+                        os.remove(input_path)
+                    except Exception:
+                        pass
+                    return fallback_tmp
         else:
             log_error(f"FFmpeg compression exited with code {proc.returncode}")
     except Exception as comp_err:
@@ -962,16 +1028,15 @@ def download_youtube(
     progress_callback: Callable[[int], None] | None = None
 ) -> tuple[str, str | None]:
     """
-    Multi-Tier YouTube Downloader:
-    Tier 1: High-Speed Cloud CDN Web Resolvers (100% bypasses Google datacenter IP-lock)
-    Tier 2: Native yt-dlp with smart mobile & TV client spoofing ('tv_embedded', 'web_embedded', 'ios', 'mweb')
+    Multi-Tier Robust YouTube Downloader:
+    Tier 1: High-Speed Cloud CDN Web Resolvers
+    Tier 2: Native yt-dlp with multi-client rotation ('android', 'ios', 'mweb', 'web') + FFmpeg audio extraction
     """
     clean_url = url.strip()
     vid_id = extract_youtube_id(clean_url)
     target_url = f"https://www.youtube.com/watch?v={vid_id}" if vid_id else clean_url
 
     temp_dir = tempfile.gettempdir()
-    prefix = f"yt_{uuid.uuid4().hex[:8]}"
     default_title = "YouTube Media"
 
     # Tier 1: Cloud CDN Web Resolver
@@ -1002,72 +1067,166 @@ def download_youtube(
         if t1_file_360 and os.path.exists(t1_file_360) and os.path.getsize(t1_file_360) > 1000:
             return t1_title_360, t1_file_360
 
-    # Tier 2: yt-dlp Native Download with TV / iOS / Embedded Client Spoofing
-    try:
+    # Tier 2: yt-dlp Native Multi-Client Strategy
+    client_strategies = [
+        ['android', 'ios', 'web'],
+        ['ios'],
+        ['mweb'],
+        ['android']
+    ]
+
+    cookie_file_path = None
+    if os.path.exists("cookies.txt") and os.path.getsize("cookies.txt") > 20:
+        cookie_file_path = os.path.abspath("cookies.txt")
+
+    for client_list in client_strategies:
+        prefix = f"yt_{uuid.uuid4().hex[:8]}"
         out_tmpl = os.path.join(temp_dir, f"{prefix}.%(ext)s")
-        if extract_audio:
-            format_spec = "bestaudio[ext=m4a]/bestaudio/best"
-        else:
-            format_spec = "best[ext=mp4][height<=720]/best[height<=720]/bestvideo[height<=720]+bestaudio/best"
+        try:
+            def ydl_progress_hook(d: dict[str, Any]):
+                if d.get("status") == "downloading" and progress_callback:
+                    total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                    dl = d.get("downloaded_bytes") or 0
+                    if total > 0:
+                        pct = min(95, int(15 + (dl / total) * 80))
+                        try:
+                            progress_callback(pct)
+                        except Exception:
+                            pass
 
-        def ydl_progress_hook(d: dict[str, Any]):
-            if d.get("status") == "downloading" and progress_callback:
-                total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-                dl = d.get("downloaded_bytes") or 0
-                if total > 0:
-                    pct = min(95, int(15 + (dl / total) * 80))
-                    try:
-                        progress_callback(pct)
-                    except Exception:
-                        pass
-
-        ydl_opts: dict[str, Any] = {
-            'format': format_spec,
-            'outtmpl': out_tmpl,
-            'quiet': True,
-            'no_warnings': True,
-            'socket_timeout': 30,
-            'nocheckcertificate': True,
-            'source_address': '0.0.0.0',
-            'cachedir': False,
-            'ignoreerrors': True,
-            'progress_hooks': [ydl_progress_hook],
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['tv_embedded', 'web_embedded', 'ios', 'mweb'],
-                    'player_skip': ['webpage', 'configs'],
+            if extract_audio:
+                format_spec = "bestaudio[ext=m4a]/bestaudio/best"
+                ydl_opts: dict[str, Any] = {
+                    'format': format_spec,
+                    'outtmpl': out_tmpl,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'socket_timeout': 35,
+                    'nocheckcertificate': True,
+                    'source_address': '0.0.0.0',
+                    'cachedir': False,
+                    'progress_hooks': [ydl_progress_hook],
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    }],
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': client_list,
+                        }
+                    }
                 }
-            }
-        }
-        if os.path.exists("cookies.txt"):
-            ydl_opts['cookiefile'] = os.path.abspath("cookies.txt")
+            else:
+                format_spec = "best[ext=mp4][height<=720]/bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+                ydl_opts = {
+                    'format': format_spec,
+                    'outtmpl': out_tmpl,
+                    'merge_output_format': 'mp4',
+                    'quiet': True,
+                    'no_warnings': True,
+                    'socket_timeout': 35,
+                    'nocheckcertificate': True,
+                    'source_address': '0.0.0.0',
+                    'cachedir': False,
+                    'progress_hooks': [ydl_progress_hook],
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': client_list,
+                        }
+                    }
+                }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(target_url, download=True)
-            if info:
-                title = info.get("title") or default_title
-                candidate_path = ydl.prepare_filename(info)
-                if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 1000:
-                    return title, candidate_path
-                for f in os.listdir(temp_dir):
-                    if f.startswith(prefix):
-                        f_path = os.path.join(temp_dir, f)
-                        if os.path.getsize(f_path) > 1000:
-                            return title, f_path
-    except Exception as ydl_err:
-        log_error(f"yt-dlp YouTube client failed: {ydl_err}")
+            if cookie_file_path:
+                ydl_opts['cookiefile'] = cookie_file_path
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(target_url, download=True)
+                if info:
+                    title = info.get("title") or default_title
+                    candidate_path = ydl.prepare_filename(info)
+                    # When FFmpegExtractAudio runs, extension changes to .mp3
+                    if extract_audio and not candidate_path.endswith(".mp3"):
+                        candidate_path = os.path.splitext(candidate_path)[0] + ".mp3"
+
+                    if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 1000:
+                        return title, candidate_path
+                    for f in os.listdir(temp_dir):
+                        if f.startswith(prefix):
+                            f_path = os.path.join(temp_dir, f)
+                            if os.path.getsize(f_path) > 1000:
+                                return title, f_path
+        except Exception as ydl_strat_err:
+            log_error(f"yt-dlp YouTube strategy {client_list} note: {ydl_strat_err}")
 
     return default_title, None
 
 # ----------------- FACEBOOK DOWNLOADER (VIDEOS & REELS) ----------------- #
 
-def download_facebook(url: str, extract_audio: bool = False) -> tuple[str, str | None]:
+def download_facebook(url: str, extract_audio: bool = False, progress_callback: Callable[[int], None] | None = None) -> tuple[str, str | None]:
     clean_url = url.strip()
     temp_dir = tempfile.gettempdir()
     prefix = f"fb_{uuid.uuid4().hex[:8]}"
-    out_tmpl = os.path.join(temp_dir, f"{prefix}.%(ext)s")
+    default_title = "Facebook Video"
 
+    # Tier 1: RapidAPI Social Download All-in-One (Autolink HD Direct)
+    if RAPIDAPI_KEY:
+        try:
+            rapid_headers = {
+                "x-rapidapi-key": RAPIDAPI_KEY,
+                "x-rapidapi-host": RAPIDAPI_IG_HOST,
+                "Content-Type": "application/json",
+                "User-Agent": USER_AGENT,
+                "Accept": "application/json"
+            }
+            req = Request(
+                f"https://{RAPIDAPI_IG_HOST}/v1/social/autolink",
+                data=json.dumps({"url": clean_url}).encode("utf-8"),
+                headers=rapid_headers,
+                method="POST"
+            )
+            with urlopen(req, timeout=14) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            if isinstance(data, dict):
+                title = data.get("title") or default_title
+                medias = data.get("medias", []) or data.get("media", [])
+                if isinstance(medias, list) and medias:
+                    best_m = None
+                    if extract_audio:
+                        for item in medias:
+                            if isinstance(item, dict) and item.get("type") == "audio" and item.get("url"):
+                                best_m = item.get("url")
+                                break
+                    if not best_m:
+                        for item in medias:
+                            if isinstance(item, dict) and item.get("url"):
+                                # Prefer HD video if available
+                                if "hd" in str(item.get("quality", "")).lower():
+                                    best_m = item.get("url")
+                                    break
+                        if not best_m:
+                            for item in medias:
+                                if isinstance(item, dict) and item.get("url"):
+                                    best_m = item.get("url")
+                                    break
+
+                    if best_m:
+                        suffix = ".m4a" if extract_audio else ".mp4"
+                        tmp_file = download_to_temp_file(
+                            best_m,
+                            suffix=suffix,
+                            referer="https://www.facebook.com/",
+                            progress_callback=progress_callback
+                        )
+                        if tmp_file and os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 1000:
+                            return title, tmp_file
+        except Exception as fb_rapid_err:
+            log_error(f"RapidAPI Facebook autolink error: {fb_rapid_err}")
+
+    # Tier 2: yt-dlp Native Direct Downloader
     try:
+        out_tmpl = os.path.join(temp_dir, f"{prefix}.%(ext)s")
         if extract_audio:
             ydl_opts = {
                 'format': 'bestaudio[ext=m4a]/bestaudio/best',
@@ -1100,7 +1259,7 @@ def download_facebook(url: str, extract_audio: bool = False) -> tuple[str, str |
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(clean_url, download=True)
             if info:
-                title = info.get("title") or "Facebook Video"
+                title = info.get("title") or default_title
                 candidate_path = ydl.prepare_filename(info)
                 if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 1000:
                     return title, candidate_path
@@ -1112,7 +1271,7 @@ def download_facebook(url: str, extract_audio: bool = False) -> tuple[str, str |
     except Exception as fb_err:
         log_error(f"Facebook download failed: {fb_err}")
 
-    return "Facebook Video", None
+    return default_title, None
 
 # ----------------- META AI & IMAGE GENERATION ENGINE ----------------- #
 
@@ -1308,7 +1467,7 @@ def process_download_execution(
         elif platform == "youtube":
             title, file_path = download_youtube(url, extract_audio=extract_audio, progress_callback=report_pct)
         elif platform == "facebook":
-            title, file_path = download_facebook(url, extract_audio=extract_audio)
+            title, file_path = download_facebook(url, extract_audio=extract_audio, progress_callback=report_pct)
 
         if not file_path:
             bot_instance.edit_message_text(
@@ -1641,6 +1800,8 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             f"  🕒 <b>Server Time:</b> <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>\n"
             f"╰────────────────────────╯\n\n"
             f"⚡ <b>ADMIN COMMANDS:</b>\n"
+            f"• <code>/msg &lt;id&gt; &lt;text&gt;</code> — Send direct personal message to a single user\n"
+            f"• <code>/setcookies</code> — Upload/set YouTube cookies for 100% bypass\n"
             f"• <code>/clones</code> — Manage cloned bots (Stop/Start/Delete)\n"
             f"• <code>/users</code> — List all users with country analytics\n"
             f"• <code>/userinfo &lt;id&gt;</code> — Inspect complete user history\n"
@@ -2019,6 +2180,110 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
 
         safe_reply(bot_instance, message, f"🚀 <b>Broadcasting announcement to {len(users_db)} users...</b>", parse_mode="HTML")
         EXECUTOR.submit(execute_broadcast, message.chat.id, announcement)
+
+    # /msg <user_id> <message> and /send <user_id> <message> (ADMIN ONLY) - Direct Private Message
+    @bot_instance.message_handler(commands=['msg', 'send', 'dm'])
+    def handle_direct_message(message: telebot.types.Message):
+        if message.chat.id != ADMIN_ID:
+            return
+
+        text = (message.text or "").strip()
+        tokens = text.split(maxsplit=2)
+        if len(tokens) < 3:
+            usage_msg = (
+                "⚠️ <b>Usage:</b> <code>/msg &lt;user_id&gt; &lt;your message text&gt;</code>\n\n"
+                "<i>Example:</i>\n"
+                "<code>/msg 6951910709 Hello! Your requested video download is now working.</code>"
+            )
+            safe_reply(bot_instance, message, usage_msg, parse_mode="HTML")
+            return
+
+        target_id_raw = tokens[1].strip()
+        target_digits = re.sub(r"[^\d]", "", target_id_raw)
+        if not target_digits:
+            safe_reply(bot_instance, message, "⚠️ <b>Invalid User ID.</b> Please provide a numeric Telegram User ID.", parse_mode="HTML")
+            return
+
+        target_user_id = int(target_digits)
+        user_message_text = tokens[2].strip()
+
+        # Format message sent to the recipient
+        card_to_user = (
+            "╭━━━━ 📩 <b>MESSAGE FROM SUPPORT / ADMIN</b> ━━━━╮\n\n"
+            f"{escape(user_message_text)}\n\n"
+            "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯\n"
+            "⚡ <i>7G Master Bot Official Support Desk</i>"
+        )
+
+        try:
+            bot.send_message(target_user_id, card_to_user, parse_mode="HTML")
+            confirmation = (
+                f"✅ <b>Message Delivered Successfully!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>Recipient User ID:</b> <code>{target_user_id}</code>\n"
+                f"📝 <b>Message:</b> {escape(user_message_text)}\n"
+                f"🕒 <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>"
+            )
+            safe_reply(bot_instance, message, confirmation, parse_mode="HTML")
+        except telebot.apihelper.ApiTelegramException as api_err:
+            safe_reply(
+                bot_instance,
+                message,
+                f"❌ <b>Delivery Failed:</b> Telegram API error: <i>{escape(str(api_err))}</i>\n"
+                f"(The user may have blocked the bot, never initiated chat, or the User ID is invalid).",
+                parse_mode="HTML"
+            )
+        except Exception as send_err:
+            safe_reply(
+                bot_instance,
+                message,
+                f"❌ <b>Failed to deliver message:</b> <i>{escape(str(send_err))}</i>",
+                parse_mode="HTML"
+            )
+
+    # /setcookies (ADMIN ONLY) - Manage YouTube cookies for 100% bypass
+    @bot_instance.message_handler(commands=['setcookies', 'cookies'])
+    def handle_set_cookies(message: telebot.types.Message):
+        if message.chat.id != ADMIN_ID:
+            return
+
+        doc = None
+        if message.reply_to_message and message.reply_to_message.document:
+            doc = message.reply_to_message.document
+        elif message.document:
+            doc = message.document
+
+        if doc:
+            try:
+                f_info = bot_instance.get_file(doc.file_id)
+                downloaded = bot_instance.download_file(f_info.file_path)
+                with open("cookies.txt", "wb") as f:
+                    f.write(downloaded)
+                safe_reply(bot_instance, message, "✅ <b>YouTube cookies file successfully saved to <code>cookies.txt</code>!</b>", parse_mode="HTML")
+                return
+            except Exception as e:
+                safe_reply(bot_instance, message, f"❌ Failed to save cookies: {e}", parse_mode="HTML")
+                return
+
+        raw_text = (message.text or "")[len("/setcookies"):].strip()
+        if raw_text:
+            try:
+                with open("cookies.txt", "w", encoding="utf-8") as f:
+                    f.write(raw_text)
+                safe_reply(bot_instance, message, "✅ <b>YouTube cookies text successfully saved to <code>cookies.txt</code>!</b>", parse_mode="HTML")
+                return
+            except Exception as e:
+                safe_reply(bot_instance, message, f"❌ Failed to save cookies: {e}", parse_mode="HTML")
+                return
+
+        usage_txt = (
+            "🍪 <b>YouTube Cookies Manager</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "To update cookies for 100% bypass of YouTube bot checks:\n"
+            "1. Reply to a <code>cookies.txt</code> document with <code>/setcookies</code>\n"
+            "2. Or send: <code>/setcookies # Netscape HTTP Cookie File...</code>"
+        )
+        safe_reply(bot_instance, message, usage_txt, parse_mode="HTML")
 
     # General incoming messages and link processor
     @bot_instance.message_handler(func=lambda message: True)
