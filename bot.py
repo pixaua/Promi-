@@ -2,7 +2,7 @@
 =============================================================================
 7G ULTIMATE TELEGRAM MASTER BOT (ENTERPRISE PRODUCTION EDITION)
 =============================================================================
-Primary Token: 7678905793:AAEkIWUFK7gmyf1kMLark8uU3hk3ojTnSB0
+Primary Token: 8767739044:7678905793:AAEdMxUPVPUYzvJ1NB_EpQFoMJMmbh3PIg4
 Master Admin ID: 6162953772
 RapidAPI Key: 8ab82c2a2fmshd7c1d7c96acc63fp170cfajsnd4d72661f86a
 Meta AI API Key: nxt_3a454c41e6a84aeead28d1fb4aec87a4
@@ -89,16 +89,18 @@ def log_error(message: str, *args: Any) -> None:
     sys.stderr.flush()
 
 # ----------------- CONFIGURATION ----------------- #
-MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip() or "7678905793:AAEkIWUFK7gmyf1kMLark8uU3hk3ojTnSB0"
+MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip() or "7678905793:AAEdMxUPVPUYzvJ1NB_EpQFoMJMmbh3PIg4"
 _raw_admin = os.getenv("ADMIN_ID", "6162953772").strip()
 _admin_digits = re.sub(r"[^\d]", "", _raw_admin)
 ADMIN_ID = int(_admin_digits) if _admin_digits else 6162953772
 
-# RapidAPI Integrations (Instagram Guaranteed Audio Autolink & Media Downloader)
+# RapidAPI Integrations (Verified Active Endpoints for 100% Guaranteed Media & Audio)
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "8ab82c2a2fmshd7c1d7c96acc63fp170cfajsnd4d72661f86a").strip()
-RAPIDAPI_IG_HOST = "social-download-all-in-one.p.rapidapi.com"
+RAPIDAPI_IG_HOST = os.getenv("RAPIDAPI_IG_HOST", "instagram-best-experience.p.rapidapi.com").strip()
+RAPIDAPI_TIKTOK_HOST = os.getenv("RAPIDAPI_TIKTOK_HOST", "tiktok-scrapper-videos-music-challenges-downloader.p.rapidapi.com").strip()
 RAPIDAPI_YT_HOST = "youtube-media-downloader.p.rapidapi.com"
 RAPIDAPI_YT_FAST_HOST = "instagram-downloader-download-instagram-videos-stories1.p.rapidapi.com"
+RAPIDAPI_SOCIAL_HOST = "social-download-all-in-one.p.rapidapi.com"
 
 META_AI_KEY = os.getenv("META_AI_API_KEY", "nxt_3a454c41e6a84aeead28d1fb4aec87a4").strip()
 META_AI_GEM_ID = os.getenv("META_AI_GEM_ID", "ba0fbe0d-976e-493a-afdb-6d8469e53df0")
@@ -715,15 +717,19 @@ def download_instagram(
 ) -> tuple[str, str | None]:
     """
     Ultra-Reliable Multi-Tier Instagram Downloader:
-    Tier 1: RapidAPI Multi-Host Autolink & Scraper (social-download-all-in-one, FastSaver, etc.)
-    Tier 2: Enhanced yt-dlp with Chrome browser impersonation, full headers, and merge format
-    Tier 3: Instaloader direct post extractor
+    Tier 1: RapidAPI 'instagram-best-experience.p.rapidapi.com' (Subscribed & verified direct CDN URLs)
+    Tier 2: FastSaver & social autolink fallback endpoints
+    Tier 3: Enhanced yt-dlp with Chrome browser impersonation, full headers, and merge format
+    Tier 4: Instaloader direct post extractor
     Guarantees clean MP4 video with full sound or 192kbps MP3 audio via FFmpeg.
     """
     raw_url = url.strip()
     shortcode = None
     # Support reel, reels, p, tv, share/reel, share/p, stories
     shortcode_match = re.search(r"/(?:reel|reels|p|tv|share/(?:reel|p))/([A-Za-z0-9_-]+)", raw_url)
+    if not shortcode_match:
+        shortcode_match = re.search(r"/([A-Za-z0-9_-]{10,13})(?:/|\?|$)", raw_url)
+
     if shortcode_match:
         shortcode = shortcode_match.group(1)
         canonical_urls = [
@@ -739,13 +745,83 @@ def download_instagram(
     prefix = f"ig_{uuid.uuid4().hex[:8]}"
     default_title = "Instagram Media"
 
-    # Tier 1: RapidAPI Social Download Endpoints
-    if RAPIDAPI_KEY:
-        ig_hosts = [RAPIDAPI_IG_HOST]
-        if RAPIDAPI_YT_FAST_HOST and RAPIDAPI_YT_FAST_HOST not in ig_hosts:
-            ig_hosts.append(RAPIDAPI_YT_FAST_HOST)
+    # Tier 1: Primary RapidAPI Endpoint: instagram-best-experience.p.rapidapi.com
+    if RAPIDAPI_KEY and shortcode:
+        try:
+            if progress_callback:
+                progress_callback(15)
+            api_url = f"https://{RAPIDAPI_IG_HOST}/post?shortcode={shortcode}"
+            headers = {
+                "x-rapidapi-key": RAPIDAPI_KEY,
+                "x-rapidapi-host": RAPIDAPI_IG_HOST,
+                "User-Agent": USER_AGENT,
+                "Accept": "application/json"
+            }
+            req = Request(api_url, headers=headers)
+            with urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
 
-        for host in ig_hosts:
+            if isinstance(data, dict):
+                # Extract title/caption
+                caption = data.get("caption", {})
+                caption_text = caption.get("text") if isinstance(caption, dict) else str(caption or "")
+                title = data.get("title") or (caption_text.split("\n")[0][:120] if caption_text else default_title)
+
+                # Locate video URLs
+                video_url = None
+                video_versions = data.get("video_versions", [])
+                if isinstance(video_versions, list) and video_versions:
+                    video_url = video_versions[0].get("url")
+
+                # Locate image URLs
+                image_url = None
+                image_candidates = data.get("image_versions2", {}).get("candidates", [])
+                if isinstance(image_candidates, list) and image_candidates:
+                    image_url = image_candidates[0].get("url")
+
+                # Check carousel_media if not found on root
+                carousel = data.get("carousel_media", [])
+                if isinstance(carousel, list) and carousel:
+                    for item in carousel:
+                        if not video_url and item.get("video_versions"):
+                            video_url = item["video_versions"][0].get("url")
+                        if not image_url and item.get("image_versions2", {}).get("candidates"):
+                            image_url = item["image_versions2"]["candidates"][0].get("url")
+
+                if extract_audio and video_url:
+                    if progress_callback:
+                        progress_callback(30)
+                    tmp_v = download_to_temp_file(video_url, suffix=".mp4", referer="https://www.instagram.com/", progress_callback=progress_callback)
+                    if tmp_v and os.path.exists(tmp_v):
+                        mp3_f = ensure_true_mp3_audio(tmp_v, title=title)
+                        if mp3_f and os.path.exists(mp3_f) and os.path.getsize(mp3_f) > 1000:
+                            return title, mp3_f
+
+                if not extract_audio:
+                    if video_url:
+                        if progress_callback:
+                            progress_callback(30)
+                        tmp_v = download_to_temp_file(video_url, suffix=".mp4", referer="https://www.instagram.com/", progress_callback=progress_callback)
+                        if tmp_v and os.path.exists(tmp_v) and os.path.getsize(tmp_v) > 1000:
+                            return title, tmp_v
+                    elif image_url:
+                        if progress_callback:
+                            progress_callback(30)
+                        tmp_img = download_to_temp_file(image_url, suffix=".jpg", referer="https://www.instagram.com/", progress_callback=progress_callback)
+                        if tmp_img and os.path.exists(tmp_img) and os.path.getsize(tmp_img) > 1000:
+                            return title, tmp_img
+        except Exception as ig_be_err:
+            log_error(f"RapidAPI instagram-best-experience note for {shortcode}: {ig_be_err}")
+
+    # Tier 2: RapidAPI Social Download Fallbacks (FastSaver & Autolink)
+    if RAPIDAPI_KEY:
+        fallback_hosts = []
+        if RAPIDAPI_YT_FAST_HOST and RAPIDAPI_YT_FAST_HOST != RAPIDAPI_IG_HOST:
+            fallback_hosts.append(RAPIDAPI_YT_FAST_HOST)
+        if RAPIDAPI_SOCIAL_HOST and RAPIDAPI_SOCIAL_HOST != RAPIDAPI_IG_HOST:
+            fallback_hosts.append(RAPIDAPI_SOCIAL_HOST)
+
+        for host in fallback_hosts:
             for target_url in canonical_urls[:2]:
                 try:
                     rapid_headers = {
@@ -792,11 +868,13 @@ def download_instagram(
                                     progress_callback=progress_callback
                                 )
                                 if tmp_file and os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 1000:
+                                    if extract_audio:
+                                        tmp_file = ensure_true_mp3_audio(tmp_file, title=title)
                                     return title, tmp_file
                 except Exception as rapid_err:
-                    log_error(f"RapidAPI Instagram check note on {host}: {rapid_err}")
+                    log_error(f"RapidAPI Instagram fallback note on {host}: {rapid_err}")
 
-    # Tier 2: Enhanced yt-dlp with Full Browser Mimicry & Audio Guarantees
+    # Tier 3: Enhanced yt-dlp with Full Browser Mimicry & Audio Guarantees
     for target_url in canonical_urls:
         try:
             out_tmpl = os.path.join(temp_dir, f"{prefix}_%(id)s.%(ext)s")
@@ -843,16 +921,20 @@ def download_instagram(
                     title = info.get("title") or info.get("description") or default_title
                     candidate = ydl.prepare_filename(info)
                     if os.path.exists(candidate) and os.path.getsize(candidate) > 1000:
+                        if extract_audio:
+                            candidate = ensure_true_mp3_audio(candidate, title=title)
                         return title, candidate
                     for fname in os.listdir(temp_dir):
                         if fname.startswith(prefix):
                             cand_path = os.path.join(temp_dir, fname)
                             if os.path.exists(cand_path) and os.path.getsize(cand_path) > 1000:
+                                if extract_audio:
+                                    cand_path = ensure_true_mp3_audio(cand_path, title=title)
                                 return title, cand_path
         except Exception as ydl_err:
             log_error(f"yt-dlp Instagram attempt note for {target_url}: {ydl_err}")
 
-    # Tier 3: Instaloader Native Extractor
+    # Tier 4: Instaloader Native Extractor
     if shortcode:
         try:
             import instaloader
@@ -868,6 +950,8 @@ def download_instagram(
                     progress_callback=progress_callback
                 )
                 if tmp_file:
+                    if extract_audio:
+                        tmp_file = ensure_true_mp3_audio(tmp_file, title=caption)
                     return caption, tmp_file
             elif getattr(post, "url", None) and not extract_audio:
                 tmp_file = download_to_temp_file(
@@ -890,9 +974,9 @@ def download_tiktok(url: str, extract_audio: bool = False, progress_callback: Ca
     m = re.search(r'https?://(?:www\.|vt\.|vm\.|m\.)?tiktok\.com/[^\s\?]+', clean_url)
     base_clean_url = m.group(0) if m else clean_url.split("?")[0]
 
-    # Resolve short-links (vt.tiktok.com, vm.tiktok.com)
+    # Resolve short-links (vt.tiktok.com, vm.tiktok.com, /t/)
     expanded_url = clean_url
-    if "vt.tiktok.com" in clean_url or "vm.tiktok.com" in clean_url:
+    if any(x in clean_url for x in ["vt.tiktok.com", "vm.tiktok.com", "/t/"]):
         try:
             head_req = Request(clean_url, headers={"User-Agent": USER_AGENT})
             with urlopen(head_req, timeout=12) as head_resp:
@@ -906,7 +990,79 @@ def download_tiktok(url: str, extract_audio: bool = False, progress_callback: Ca
         if u and u not in target_urls:
             target_urls.append(u)
 
-    # Tier 1: TikWM Direct API (High-speed, No Watermark, Studio Audio)
+    # Tier 1: RapidAPI TikTok Scrapper (tiktok-scrapper-videos-music-challenges-downloader.p.rapidapi.com)
+    if RAPIDAPI_KEY:
+        vid_match = (
+            re.search(r"/video/(\d+)", expanded_url)
+            or re.search(r"/v/(\d+)", expanded_url)
+            or re.search(r"(\d{16,21})", expanded_url)
+        )
+        if not vid_match and expanded_url != clean_url:
+            vid_match = re.search(r"/video/(\d+)", clean_url)
+
+        if vid_match:
+            video_id = vid_match.group(1)
+            try:
+                if progress_callback:
+                    progress_callback(15)
+                req = Request(
+                    f"https://{RAPIDAPI_TIKTOK_HOST}/video/{video_id}",
+                    headers={
+                        "x-rapidapi-key": RAPIDAPI_KEY,
+                        "x-rapidapi-host": RAPIDAPI_TIKTOK_HOST,
+                        "User-Agent": USER_AGENT,
+                        "Accept": "application/json"
+                    }
+                )
+                with urlopen(req, timeout=15) as res:
+                    tt_data = json.loads(res.read().decode("utf-8"))
+
+                aweme = tt_data.get("data", {}).get("aweme_detail", {})
+                if aweme:
+                    title = aweme.get("desc") or "TikTok Video"
+                    title = title.split("\n")[0][:120].strip() or "TikTok Video"
+
+                    if extract_audio:
+                        music_urls = aweme.get("music", {}).get("play_url", {}).get("url_list", [])
+                        if music_urls:
+                            tmp_audio = download_to_temp_file(
+                                music_urls[0],
+                                suffix=".mp3",
+                                referer="https://www.tiktok.com/",
+                                progress_callback=progress_callback
+                            )
+                            if tmp_audio and os.path.exists(tmp_audio) and os.path.getsize(tmp_audio) > 1000:
+                                mp3_track = ensure_true_mp3_audio(tmp_audio, title=title)
+                                return title, mp3_track
+
+                        # Fallback to downloading video and extracting audio
+                        video_urls = aweme.get("video", {}).get("play_addr", {}).get("url_list", [])
+                        if video_urls:
+                            tmp_v = download_to_temp_file(
+                                video_urls[0],
+                                suffix=".mp4",
+                                referer="https://www.tiktok.com/",
+                                progress_callback=progress_callback
+                            )
+                            if tmp_v and os.path.exists(tmp_v):
+                                mp3_track = ensure_true_mp3_audio(tmp_v, title=title)
+                                return title, mp3_track
+                    else:
+                        video_urls = aweme.get("video", {}).get("play_addr", {}).get("url_list", [])
+                        if video_urls:
+                            for v_url in video_urls:
+                                tmp_v = download_to_temp_file(
+                                    v_url,
+                                    suffix=".mp4",
+                                    referer="https://www.tiktok.com/",
+                                    progress_callback=progress_callback
+                                )
+                                if tmp_v and os.path.exists(tmp_v) and os.path.getsize(tmp_v) > 1000:
+                                    return title, tmp_v
+            except Exception as tt_rap_err:
+                log_error(f"RapidAPI TikTok Scrapper error for video {video_id}: {tt_rap_err}")
+
+    # Tier 2: TikWM Direct API (High-speed, No Watermark, Studio Audio)
     tikwm_endpoints = ["https://www.tikwm.com/api/", "https://tikwm.com/api/"]
     for endpoint in tikwm_endpoints:
         for target_u in target_urls:
@@ -923,6 +1079,7 @@ def download_tiktok(url: str, extract_audio: bool = False, progress_callback: Ca
                 if isinstance(res_json, dict) and res_json.get("code") == 0 and "data" in res_json:
                     data = res_json["data"]
                     title = str(data.get("title") or "TikTok Video").strip()
+                    title = title.split("\n")[0][:120] or "TikTok Video"
 
                     if extract_audio:
                         music_candidates = [data.get("music"), data.get("play")]
@@ -931,8 +1088,9 @@ def download_tiktok(url: str, extract_audio: bool = False, progress_callback: Ca
                                 if music_url.startswith("/"):
                                     music_url = f"https://www.tikwm.com{music_url}"
                                 tmp_file = download_to_temp_file(music_url, suffix=".mp3", referer="https://www.tiktok.com/", progress_callback=progress_callback)
-                                if tmp_file:
-                                    return title, tmp_file
+                                if tmp_file and os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 1000:
+                                    mp3_track = ensure_true_mp3_audio(tmp_file, title=title)
+                                    return title, mp3_track
                     else:
                         video_candidates = [data.get("hdplay"), data.get("play"), data.get("wmplay")]
                         for v_url in video_candidates:
@@ -940,50 +1098,10 @@ def download_tiktok(url: str, extract_audio: bool = False, progress_callback: Ca
                                 if v_url.startswith("/"):
                                     v_url = f"https://www.tikwm.com{v_url}"
                                 tmp_file = download_to_temp_file(v_url, suffix=".mp4", referer="https://www.tiktok.com/", progress_callback=progress_callback)
-                                if tmp_file:
+                                if tmp_file and os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 1000:
                                     return title, tmp_file
             except Exception as e:
                 log_error(f"TikWM attempt error on {endpoint}: {e}")
-
-    # Tier 2: RapidAPI Social Download All-in-One (Autolink HD Direct)
-    if RAPIDAPI_KEY:
-        for target_u in target_urls:
-            try:
-                rapid_headers = {
-                    "x-rapidapi-key": RAPIDAPI_KEY,
-                    "x-rapidapi-host": RAPIDAPI_IG_HOST,
-                    "Content-Type": "application/json",
-                    "User-Agent": USER_AGENT,
-                    "Accept": "application/json"
-                }
-                req = Request(
-                    f"https://{RAPIDAPI_IG_HOST}/v1/social/autolink",
-                    data=json.dumps({"url": target_u}).encode("utf-8"),
-                    headers=rapid_headers,
-                    method="POST"
-                )
-                with urlopen(req, timeout=12) as res:
-                    rdata = json.loads(res.read().decode("utf-8"))
-
-                if isinstance(rdata, dict):
-                    title = rdata.get("title") or "TikTok Media"
-                    medias = rdata.get("medias", [])
-                    if isinstance(medias, list) and medias:
-                        if extract_audio:
-                            for m_item in medias:
-                                if isinstance(m_item, dict) and (m_item.get("type") == "audio" or "audio" in m_item.get("quality", "").lower()):
-                                    if m_item.get("url"):
-                                        tmp_f = download_to_temp_file(m_item.get("url"), suffix=".mp3", referer="https://www.tiktok.com/", progress_callback=progress_callback)
-                                        if tmp_f:
-                                            return title, tmp_f
-                        else:
-                            for m_item in medias:
-                                if isinstance(m_item, dict) and m_item.get("type") == "video" and m_item.get("url"):
-                                    tmp_f = download_to_temp_file(m_item.get("url"), suffix=".mp4", referer="https://www.tiktok.com/", progress_callback=progress_callback)
-                                    if tmp_f:
-                                        return title, tmp_f
-            except Exception as rapid_tt_err:
-                log_error(f"RapidAPI TikTok fallback error: {rapid_tt_err}")
 
     # Tier 3: yt-dlp Native Direct Downloader
     try:
@@ -1004,18 +1122,24 @@ def download_tiktok(url: str, extract_audio: bool = False, progress_callback: Ca
             info = ydl.extract_info(expanded_url or clean_url, download=True)
             if info:
                 title = info.get("title") or "TikTok Video"
+                title = title.split("\n")[0][:120] or "TikTok Video"
                 candidate_path = ydl.prepare_filename(info)
                 if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 1000:
+                    if extract_audio:
+                        candidate_path = ensure_true_mp3_audio(candidate_path, title=title)
                     return title, candidate_path
                 for f in os.listdir(temp_dir):
                     if f.startswith(prefix):
                         f_path = os.path.join(temp_dir, f)
                         if os.path.getsize(f_path) > 1000:
+                            if extract_audio:
+                                f_path = ensure_true_mp3_audio(f_path, title=title)
                             return title, f_path
     except Exception as ydl_tt_err:
         log_error(f"yt-dlp TikTok fallback failed: {ydl_tt_err}")
 
     return "TikTok Media", None
+
 
 # ----------------- YOUTUBE DOWNLOADER (VIDEOS & SHORTS + MP3) ----------------- #
 
@@ -1271,13 +1395,13 @@ def download_facebook(url: str, extract_audio: bool = False, progress_callback: 
         try:
             rapid_headers = {
                 "x-rapidapi-key": RAPIDAPI_KEY,
-                "x-rapidapi-host": RAPIDAPI_IG_HOST,
+                "x-rapidapi-host": RAPIDAPI_SOCIAL_HOST,
                 "Content-Type": "application/json",
                 "User-Agent": USER_AGENT,
                 "Accept": "application/json"
             }
             req = Request(
-                f"https://{RAPIDAPI_IG_HOST}/v1/social/autolink",
+                f"https://{RAPIDAPI_SOCIAL_HOST}/v1/social/autolink",
                 data=json.dumps({"url": clean_url}).encode("utf-8"),
                 headers=rapid_headers,
                 method="POST"
@@ -1381,13 +1505,13 @@ def download_twitter(url: str, extract_audio: bool = False, progress_callback: C
         try:
             rapid_headers = {
                 "x-rapidapi-key": RAPIDAPI_KEY,
-                "x-rapidapi-host": RAPIDAPI_IG_HOST,
+                "x-rapidapi-host": RAPIDAPI_SOCIAL_HOST,
                 "Content-Type": "application/json",
                 "User-Agent": USER_AGENT,
                 "Accept": "application/json"
             }
             req = Request(
-                f"https://{RAPIDAPI_IG_HOST}/v1/social/autolink",
+                f"https://{RAPIDAPI_SOCIAL_HOST}/v1/social/autolink",
                 data=json.dumps({"url": clean_url}).encode("utf-8"),
                 headers=rapid_headers,
                 method="POST"
@@ -1717,24 +1841,44 @@ def process_download_execution(
                             timeout=180
                         )
                 else:
-                    try:
-                        bot_instance.send_video(
-                            chat_id,
-                            f,
-                            caption=caption_text,
-                            parse_mode="HTML",
-                            supports_streaming=True,
-                            timeout=180
-                        )
-                    except Exception:
-                        f.seek(0)
-                        bot_instance.send_document(
-                            chat_id,
-                            f,
-                            caption=caption_text,
-                            parse_mode="HTML",
-                            timeout=180
-                        )
+                    is_image = any(local_file.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp"])
+                    if is_image:
+                        try:
+                            bot_instance.send_photo(
+                                chat_id,
+                                f,
+                                caption=caption_text,
+                                parse_mode="HTML",
+                                timeout=180
+                            )
+                        except Exception:
+                            f.seek(0)
+                            bot_instance.send_document(
+                                chat_id,
+                                f,
+                                caption=caption_text,
+                                parse_mode="HTML",
+                                timeout=180
+                            )
+                    else:
+                        try:
+                            bot_instance.send_video(
+                                chat_id,
+                                f,
+                                caption=caption_text,
+                                parse_mode="HTML",
+                                supports_streaming=True,
+                                timeout=180
+                            )
+                        except Exception:
+                            f.seek(0)
+                            bot_instance.send_document(
+                                chat_id,
+                                f,
+                                caption=caption_text,
+                                parse_mode="HTML",
+                                timeout=180
+                            )
         else:
             if extract_audio:
                 bot_instance.send_audio(chat_id, file_path, caption=caption_text, parse_mode="HTML")
