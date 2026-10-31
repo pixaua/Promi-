@@ -2,7 +2,7 @@
 =============================================================================
 7G ULTIMATE TELEGRAM MASTER BOT (ENTERPRISE PRODUCTION EDITION)
 =============================================================================
-Primary Token: 8767739044:7678905793:AAEdMxUPVPUYzvJ1NB_EpQFoMJMmbh3PIg4
+Primary Token: 7678905793:AAEdMxUPVPUYzvJ1NB_EpQFoMJMmbh3PIg4
 Master Admin ID: 6162953772
 RapidAPI Key: 8ab82c2a2fmshd7c1d7c96acc63fp170cfajsnd4d72661f86a
 Meta AI API Key: nxt_3a454c41e6a84aeead28d1fb4aec87a4
@@ -122,6 +122,41 @@ USER_FILE = os.path.join(DATA_DIR, "users_db.json")
 BANNED_FILE = os.path.join(DATA_DIR, "banned_users.json")
 CONFIG_FILE = os.path.join(DATA_DIR, "bot_config.json")
 CLONES_FILE = os.path.join(DATA_DIR, "clones_db.json")
+
+# ----------------- ⭐ GET PREMIUM APPS CONFIGURATION (10 SLOTS) ----------------- #
+# 10 configurable slots: Slots 1-3 pre-defined; Slots 4-10 empty template slots ("").
+# The bot dynamically displays ONLY apps with valid non-empty 'name' and ('link' or 'file_id')!
+# Referral Logic: 1st active app requires 2 referrals; each subsequent app requires +1 referral (2, 3, 4, 5...).
+PREMIUM_APPS: dict[int, dict[str, Any]] = {
+    1: {
+        "name": "CapCut Pro (Mod VIP)",
+        "desc": "🎬 No Watermark • 4K 60FPS • VIP Transitions & Templates Unlocked",
+        "link": "https://t.me/c/sample_capcut_link",
+        "file_id": "",  # Optional direct Telegram document/file ID
+        "required_refs": 2,  # 1st app: 2 referrals required
+    },
+    2: {
+        "name": "111 VPN Pro (WARP+ Unlimited)",
+        "desc": "🛡️ Ultra-Fast 1.1.1.1 WARP+ VPN • Unlimited Bandwidth • Zero Lag",
+        "link": "https://t.me/c/sample_vpn_link",
+        "file_id": "",
+        "required_refs": 3,  # 2nd app: 1 additional referral (2 + 1 = 3)
+    },
+    3: {
+        "name": "Telegram Pro (VIP Features)",
+        "desc": "⭐ Faster Downloads • Voice-to-Text • Custom App Icons & Badges",
+        "link": "https://t.me/c/sample_tgpro_link",
+        "file_id": "",
+        "required_refs": 4,  # 3rd app: 1 additional referral (3 + 1 = 4)
+    },
+    4: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 5},
+    5: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 6},
+    6: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 7},
+    7: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 8},
+    8: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 9},
+    9: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 10},
+    10: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 11},
+}
 
 # State & Concurrency (Scaled for 100+ High-Concurrency Users)
 FILE_LOCK = threading.RLock()
@@ -340,6 +375,104 @@ def chunk_and_send(
             bot_instance.send_message(chat_id, current_chunk, parse_mode=parse_mode)
         except Exception:
             bot_instance.send_message(chat_id, current_chunk, parse_mode=None)
+
+# ----------------- PREMIUM APPS & REFERRAL SYSTEM LOGIC ----------------- #
+
+def get_active_premium_apps() -> list[tuple[int, dict[str, Any], int]]:
+    """
+    Returns list of tuples: (slot_number, app_dictionary, calculated_required_refs).
+    Filters ONLY apps where 'name' is non-empty and has either 'link' or 'file_id'.
+    Enforces referral logic:
+    - 1st active app requires 2 referrals.
+    - Each subsequent active app requires 1 additional referral (2, 3, 4, 5...).
+    """
+    active_apps: list[tuple[int, dict[str, Any], int]] = []
+    rank = 1
+    for slot in range(1, 11):
+        app = PREMIUM_APPS.get(slot, {})
+        name = (app.get("name") or "").strip()
+        link = (app.get("link") or "").strip()
+        file_id = (app.get("file_id") or "").strip()
+        if name and (link or file_id):
+            # Calculate referral requirement
+            custom_req = app.get("required_refs")
+            if isinstance(custom_req, int) and custom_req > 0:
+                req_refs = custom_req
+            else:
+                req_refs = 2 if rank == 1 else (1 + rank)
+
+            active_apps.append((slot, app, req_refs))
+            rank += 1
+    return active_apps
+
+def build_premium_apps_view(user_id: int, bot_username: str) -> tuple[str, types.InlineKeyboardMarkup]:
+    """
+    Generates a VIP UI Card and Inline Keyboard showing user's current referrals
+    and unlock/download status for all configured premium apps.
+    Admin (ADMIN_ID) has automatic VIP bypass with all apps unlocked.
+    """
+    users_db = load_data(USER_FILE)
+    user_info = users_db.get(str(user_id), {}) if isinstance(users_db, dict) else {}
+    ref_list = user_info.get("referrals", [])
+    ref_count = len(ref_list) if isinstance(ref_list, list) else 0
+    is_admin = (user_id == ADMIN_ID)
+
+    ref_link = f"https://t.me/{bot_username}?start={user_id}"
+    active_apps = get_active_premium_apps()
+
+    text_lines = [
+        "⭐ <b>━━━━━━━━━━━━━━━━━━━━━━━━━━</b> ⭐",
+        "👑 <b>7G VIP PREMIUM APPS HUB</b> 🚀",
+        "⭐ <b>━━━━━━━━━━━━━━━━━━━━━━━━━━</b> ⭐\n",
+        "🎁 <i>বিনামূল্যে প্রিমিয়াম ও মোডেড VIP অ্যাপস পেতে বন্ধুদের রেফার করুন!</i>\n",
+        f"👤 <b>ইউজার:</b> {escape(user_info.get('first_name', 'VIP Member'))}",
+        f"👥 <b>আপনার সফল রেফারেল:</b> <code>{ref_count} জন বন্ধু</code>",
+        f"🌟 <b>রিওয়ার্ড পয়েন্ট:</b> <code>{user_info.get('points', 0)} PTS</code>",
+        f"🔗 <b>আপনার এক্সক্লুসিভ রেফারেল লিংক:</b>\n<code>{ref_link}</code>\n",
+        "📱 <b>AVAILABLE PREMIUM APPS:</b>",
+        "╭────────────────────────╮"
+    ]
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+
+    if not active_apps:
+        text_lines.append("  ⚠️ <i>বর্তমানে কোনো প্রিমিয়াম অ্যাপ সক্রিয় নেই। খুব শীঘ্রই নতুন অ্যাপ যুক্ত হবে!</i>")
+        text_lines.append("╰────────────────────────╯")
+    else:
+        for idx, (slot, app, req_refs) in enumerate(active_apps, start=1):
+            app_name = app.get("name", f"App #{slot}")
+            app_desc = app.get("desc", "")
+            unlocked = is_admin or (ref_count >= req_refs)
+
+            if is_admin:
+                status_badge = "👑 <b>UNLOCKED (Admin VIP Access)</b>"
+                btn_label = f"✅ [{idx}] {app_name[:22]} (Download)"
+                markup.add(types.InlineKeyboardButton(btn_label, callback_data=f"papp:get:{slot}"))
+            elif unlocked:
+                status_badge = f"✅ <b>UNLOCKED</b> (অ্যাক্সেস অনুমোদিত)"
+                btn_label = f"📥 [{idx}] {app_name[:22]} (Download)"
+                markup.add(types.InlineKeyboardButton(btn_label, callback_data=f"papp:get:{slot}"))
+            else:
+                needed = req_refs - ref_count
+                status_badge = f"🔒 <b>LOCKED</b> (প্রয়োজন {req_refs}টি রেফার • আর {needed}টি বাকি)"
+                btn_label = f"🔒 [{idx}] {app_name[:20]} (Need {needed} more)"
+                markup.add(types.InlineKeyboardButton(btn_label, callback_data=f"papp:lock:{slot}"))
+
+            text_lines.append(f"  <b>{idx}. {escape(app_name)}</b>")
+            text_lines.append(f"     • স্ট্যাটাস: {status_badge}")
+            if app_desc:
+                text_lines.append(f"     • <i>{escape(app_desc)}</i>")
+
+        text_lines.append("╰────────────────────────╯\n")
+        text_lines.append("👇 <b>নিচের অ্যাপ বাটনে ট্যাপ করে সরাসরি ডাউনলোড বা আনলক করুন:</b>")
+
+    share_text = quote(f"🔥 আনলিমিটেড এইচডি ভিডিও ডাউনলোডার ও প্রিমিয়াম আনলকড অ্যাপস পেতে এখনই জয়েন করুন: {ref_link}")
+    btn_share = types.InlineKeyboardButton("🚀 বন্ধুদের মাঝে রেফার লিংক শেয়ার করুন", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")
+    btn_refresh = types.InlineKeyboardButton("🔄 স্ট্যাটাস রিফ্রেশ করুন", callback_data="papp:refresh")
+    markup.add(btn_share)
+    markup.add(btn_refresh)
+
+    return "\n".join(text_lines), markup
 
 # ----------------- USER TRACKING & STATS RECORDING ----------------- #
 def track_user_activity(
@@ -1990,6 +2123,127 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
                         pass
             return
 
+        # Premium Apps Callback Handlers
+        if data.startswith("papp:"):
+            parts = data.split(":")
+            action = parts[1] if len(parts) > 1 else ""
+
+            if action == "refresh":
+                try:
+                    bot_instance.answer_callback_query(call.id, text="🔄 স্ট্যাটাস রিফ্রেশ হচ্ছে...")
+                except Exception:
+                    pass
+                try:
+                    me = bot_instance.get_me()
+                    b_name = me.username or "Streamly7GBot"
+                    v_text, v_markup = build_premium_apps_view(call.from_user.id, b_name)
+                    bot_instance.edit_message_text(
+                        v_text,
+                        call.message.chat.id,
+                        call.message.message_id,
+                        parse_mode="HTML",
+                        reply_markup=v_markup
+                    )
+                except Exception:
+                    pass
+                return
+
+            elif action == "lock":
+                slot_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+                app_entry = PREMIUM_APPS.get(slot_id, {})
+                app_name = app_entry.get("name", "Premium App")
+
+                users_db = load_data(USER_FILE)
+                user_info = users_db.get(str(call.from_user.id), {}) if isinstance(users_db, dict) else {}
+                ref_list = user_info.get("referrals", [])
+                ref_count = len(ref_list) if isinstance(ref_list, list) else 0
+
+                active_apps = get_active_premium_apps()
+                req_refs = 2
+                for s, _, r in active_apps:
+                    if s == slot_id:
+                        req_refs = r
+                        break
+
+                needed = max(1, req_refs - ref_count)
+
+                try:
+                    bot_instance.answer_callback_query(
+                        call.id,
+                        text=f"🔒 {app_name[:20]} ইজ লকড!\nআপনার {ref_count}/{req_refs}টি রেফারেল আছে। আনলক করতে আরও {needed} জন বন্ধুকে ইনভাইট করুন!",
+                        show_alert=True
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    me = bot_instance.get_me()
+                    b_name = me.username or "Streamly7GBot"
+                except Exception:
+                    b_name = "Streamly7GBot"
+
+                ref_link = f"https://t.me/{b_name}?start={call.from_user.id}"
+                enc_card = (
+                    f"🔒 <b>অ্যাপ আনলক করার নিয়ম:</b>\n\n"
+                    f"📱 <b>অ্যাপ:</b> {escape(app_name)}\n"
+                    f"🎯 <b>মোট প্রয়োজন:</b> {req_refs}টি রেফারেল\n"
+                    f"👥 <b>আপনার বর্তমান রেফারেল:</b> {ref_count}টি\n"
+                    f"⚡ <b>আর মাত্র প্রয়োজন:</b> <b>{needed} জন বন্ধু</b>!\n\n"
+                    f"🔗 <b>আপনার পার্সোনাল রেফারেল লিংক:</b>\n<code>{ref_link}</code>\n\n"
+                    f"<i>লিংকটি বন্ধুদের মেসেঞ্জার, হোয়াটসঅ্যাপ বা টেলিগ্রাম গ্রুপে পাঠান। তারা লিংকে ক্লিক করে বটে /start দিলেই স্বয়ংক্রিয়ভাবে অ্যাপটি আনলক হয়ে যাবে!</i> 🚀"
+                )
+                share_payload = quote(f"🔥 ডাউনলোড করুন আনলিমিটেড ভিডিও ও প্রিমিয়াম মোডেড অ্যাপস একদম ফ্রিতে! এখনই জয়েন করুন: {ref_link}")
+                enc_markup = types.InlineKeyboardMarkup()
+                enc_markup.add(types.InlineKeyboardButton("🚀 শেয়ার করুন বন্ধুদের মাঝে", url=f"https://t.me/share/url?url={ref_link}&text={share_payload}"))
+                safe_reply(bot_instance, call.message, enc_card, parse_mode="HTML", reply_markup=enc_markup)
+                return
+
+            elif action == "get":
+                slot_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+                app_entry = PREMIUM_APPS.get(slot_id, {})
+                app_name = app_entry.get("name", "Premium App")
+                app_desc = app_entry.get("desc", "")
+                app_link = app_entry.get("link", "")
+                app_file_id = app_entry.get("file_id", "")
+
+                try:
+                    bot_instance.answer_callback_query(call.id, text=f"🎉 অ্যাক্সেস আনলকড: {app_name[:20]}!")
+                except Exception:
+                    pass
+
+                delivery_text = (
+                    f"╭━━━━ ⭐ <b>PREMIUM APP UNLOCKED</b> ⭐ ━━━━╮\n"
+                    f"🎉 <b>অভিনন্দন! আপনি সফলভাবে আনলক করেছেন:</b>\n"
+                    f"📱 <b>{escape(app_name)}</b>\n"
+                    f"{('📝 <i>' + escape(app_desc) + '</i>' + chr(10)) if app_desc else ''}"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📥 <b>ডাউনলোড লিংক:</b>\n"
+                    f"<a href=\"{app_link}\">👉 সরাসরি ডাউনলোড করতে এখানে ক্লিক করুন 👈</a>\n\n"
+                    f"🔗 <b>বিকল্প লিংক:</b> <code>{escape(app_link)}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"💡 <i>কোনো সমস্যা হলে লিংকটি ব্রাউজারে পেস্ট করুন বা এডমিনকে জানান।</i>\n"
+                    f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
+                )
+
+                dl_markup = types.InlineKeyboardMarkup()
+                if app_link:
+                    dl_markup.add(types.InlineKeyboardButton(f"🚀 ডাউনলোড করুন {app_name[:18]}", url=app_link))
+
+                safe_reply(bot_instance, call.message, delivery_text, parse_mode="HTML", reply_markup=dl_markup)
+
+                if app_file_id:
+                    try:
+                        bot_instance.send_document(
+                            call.message.chat.id,
+                            app_file_id,
+                            caption=f"📦 <b>{escape(app_name)}</b>\n⚡ <i>Delivered by 7G Master Bot</i>",
+                            parse_mode="HTML"
+                        )
+                    except Exception as doc_err:
+                        log_error(f"Failed to send direct file_id document: {doc_err}")
+                return
+
+
     # /start command handler
     @bot_instance.message_handler(commands=['start'])
     def handle_start(message: telebot.types.Message):
@@ -2020,9 +2274,11 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
         track_user_activity(message.from_user, "Start Command", message.text or "", referred_by=ref_id)
 
         keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        btn_premium = types.KeyboardButton("⭐ Get Premium Apps")
         btn_stats = types.KeyboardButton("📊 My Stats")
         btn_invite = types.KeyboardButton("👥 Invite Friends")
         btn_create = types.KeyboardButton("🤖 Create Own Bot")
+        keyboard.row(btn_premium)
         keyboard.row(btn_stats, btn_invite)
         keyboard.row(btn_create)
 
@@ -2038,6 +2294,11 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             "  🎵 <b>TikTok:</b> Ultra HD Video & Studio MP3 Audio\n"
             "  🔴 <b>YouTube:</b> 1080p/720p HD Videos & Shorts + Studio MP3\n"
             "  🔵 <b>Facebook:</b> HD Videos & Reels + High-Bitrate MP3\n"
+            "╰───────────────────────╯\n\n"
+            "⭐ <b>VIP REWARDS & MODDED APPS</b>\n"
+            "╭───────────────────────╮\n"
+            "  🎁 <b>Premium Apps:</b> Tap <i>'⭐ Get Premium Apps'</i> for VIP APKs!\n"
+            "  👥 <b>Referral Engine:</b> Invite friends to unlock Pro apps free!\n"
             "╰───────────────────────╯\n\n"
             "🧠 <b>SMART AI FEATURES</b>\n"
             "╭───────────────────────╮\n"
@@ -2123,7 +2384,8 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             f"• <code>/userinfo &lt;id&gt;</code> — Inspect complete user history\n"
             f"• <code>/ban &lt;id&gt;</code> & <code>/unban &lt;id&gt;</code> — Access control\n"
             f"• <code>/broadcast &lt;text&gt;</code> — Global announcement\n"
-            f"• <code>/msg &lt;id&gt; &lt;text&gt;</code> — Send direct message to user\n"
+            f"• <code>/msg &lt;id&gt; &lt;text&gt;</code> — Send direct message or file\n"
+            f"• <code>/sendapp &lt;id&gt; &lt;slot&gt;</code> — Deliver VIP app directly without refs\n"
             f"• <code>/maintenance</code> — Toggle maintenance mode\n"
             f"• <code>/restoredb</code> — Reply to backup JSON to restore DB!"
         )
@@ -2498,20 +2760,69 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
         safe_reply(bot_instance, message, f"🚀 <b>Broadcasting announcement to {len(users_db)} users...</b>", parse_mode="HTML")
         EXECUTOR.submit(execute_broadcast, message.chat.id, announcement)
 
-    # /msg <user_id> <message> or /send <user_id> <message> (ADMIN ONLY)
-    @bot_instance.message_handler(commands=['msg', 'send', 'dm'])
+    # /msg, /send, /sendfile, /sendapp (ADMIN ONLY - Full file & app bypass support)
+    @bot_instance.message_handler(
+        commands=['msg', 'send', 'dm', 'sendfile', 'sendapp'],
+        content_types=['text', 'document', 'photo', 'video', 'audio']
+    )
     def handle_direct_message(message: telebot.types.Message):
         if message.chat.id != ADMIN_ID:
             return
 
-        raw_text = (message.text or "").strip()
+        raw_text = (message.text or message.caption or "").strip()
         cmd = raw_text.split()[0] if raw_text else "/msg"
         rest = raw_text[len(cmd):].strip()
 
+        # Dedicated /sendapp <user_id> <slot 1-10> command
+        if cmd == "/sendapp":
+            tokens = rest.split()
+            if len(tokens) >= 2 and tokens[0].isdigit() and tokens[1].isdigit():
+                target_id = tokens[0]
+                slot_id = int(tokens[1])
+                app_entry = PREMIUM_APPS.get(slot_id, {})
+                if not app_entry or not (app_entry.get("name") and (app_entry.get("link") or app_entry.get("file_id"))):
+                    safe_reply(bot_instance, message, f"⚠️ <b>Slot #{slot_id} is empty or not configured in PREMIUM_APPS.</b>", parse_mode="HTML")
+                    return
+
+                app_name = app_entry.get("name", f"App #{slot_id}")
+                app_desc = app_entry.get("desc", "")
+                app_link = app_entry.get("link", "")
+                app_file_id = app_entry.get("file_id", "")
+
+                gift_text = (
+                    f"╭━━━━ 🎁 <b>ADMIN VIP GIFT UNLOCKED</b> ━━━━╮\n"
+                    f"👑 <b>এডমিন আপনাকে পার্সোনালি ভিআইপি অ্যাক্সেস দিয়েছেন!</b>\n\n"
+                    f"📱 <b>অ্যাপ:</b> {escape(app_name)}\n"
+                    f"{('📝 <i>' + escape(app_desc) + '</i>' + chr(10)) if app_desc else ''}"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📥 <b>ডাউনলোড লিংক:</b>\n"
+                    f"<a href=\"{app_link}\">👉 সরাসরি ডাউনলোড করতে এখানে ক্লিক করুন 👈</a>\n\n"
+                    f"🔗 <b>বিকল্প লিংক:</b> <code>{escape(app_link)}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"✨ <i>কোনো রেফারেল ছাড়াই আপনি সরাসরি এটি ব্যবহার করতে পারবেন!</i> 🚀\n"
+                    f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
+                )
+                gift_markup = types.InlineKeyboardMarkup()
+                if app_link:
+                    gift_markup.add(types.InlineKeyboardButton(f"🚀 ডাউনলোড করুন {app_name[:18]}", url=app_link))
+
+                try:
+                    bot.send_message(target_id, gift_text, parse_mode="HTML", reply_markup=gift_markup)
+                    if app_file_id:
+                        bot.send_document(target_id, app_file_id, caption=f"📦 {escape(app_name)} (VIP Gift)", parse_mode="HTML")
+                    safe_reply(bot_instance, message, f"✅ <b>{escape(app_name)} (Slot #{slot_id}) has been delivered to <code>{target_id}</code> without any referral requirement!</b>", parse_mode="HTML")
+                except Exception as gift_err:
+                    safe_reply(bot_instance, message, f"❌ <b>Failed to deliver app to {target_id}:</b> <i>{escape(str(gift_err))}</i>", parse_mode="HTML")
+                return
+            else:
+                safe_reply(bot_instance, message, "⚠️ <b>Usage:</b> <code>/sendapp &lt;user_id&gt; &lt;slot_number 1-10&gt;</code>\nExample: <code>/sendapp 6951910709 1</code>", parse_mode="HTML")
+                return
+
         target_id = None
         user_msg = ""
+        source_media_msg = None
 
-        # Check if replying to another message (e.g. forward, or an alert containing an ID)
+        # Check if replying to another message (forward, alert, or file)
         if message.reply_to_message:
             reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
             id_match = re.search(r"(?:ID|User ID):\s*(\d{6,14})", reply_text, re.IGNORECASE)
@@ -2520,43 +2831,65 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             elif message.reply_to_message.forward_from:
                 target_id = str(message.reply_to_message.forward_from.id)
 
+            # Check if replied message contains document/photo/video/audio
+            if (message.reply_to_message.document or message.reply_to_message.photo or
+                message.reply_to_message.video or message.reply_to_message.audio):
+                source_media_msg = message.reply_to_message
+
             if target_id and rest:
                 user_msg = rest
 
+        # Check if current message itself has media attached
+        if message.document or message.photo or message.video or message.audio:
+            source_media_msg = message
+
         if not target_id:
             tokens = rest.split(maxsplit=1)
-            if len(tokens) >= 2 and tokens[0].isdigit():
+            if len(tokens) >= 1 and tokens[0].isdigit():
                 target_id = tokens[0]
-                user_msg = tokens[1].strip()
+                user_msg = tokens[1].strip() if len(tokens) >= 2 else ""
 
-        if not target_id or not user_msg:
+        if not target_id:
             safe_reply(
                 bot_instance,
                 message,
-                "⚠️ <b>Usage:</b>\n"
-                "• <code>/msg &lt;user_id&gt; &lt;your text&gt;</code>\n"
-                "• Or reply to any user alert/message with <code>/msg &lt;your text&gt;</code>",
+                "⚠️ <b>Admin Direct Sender Usage:</b>\n"
+                "• <code>/msg &lt;user_id&gt; &lt;text&gt;</code> — Send message\n"
+                "• <code>/sendfile &lt;user_id&gt;</code> — Reply to any file/APK/media to deliver it\n"
+                "• <code>/sendapp &lt;user_id&gt; &lt;slot 1-10&gt;</code> — Send premium app without refs\n"
+                "• Or reply to any user alert/message with <code>/msg &lt;text&gt;</code>",
                 parse_mode="HTML"
             )
             return
 
-        # Deliver clean, compact, and unique message to user (no bulky Google-like frames)
-        compact_payload = (
-            f"💬 <b>Support Team:</b>\n\n"
-            f"{escape(user_msg)}"
-        )
-
         try:
+            # File/Media Delivery
+            if source_media_msg:
+                caption_text = user_msg or (source_media_msg.caption or "")
+                formatted_cap = f"💬 <b>Support Team:</b>\n\n{escape(caption_text)}" if caption_text else None
+
+                if source_media_msg.document:
+                    bot.send_document(target_id, source_media_msg.document.file_id, caption=formatted_cap, parse_mode="HTML" if formatted_cap else None)
+                elif source_media_msg.video:
+                    bot.send_video(target_id, source_media_msg.video.file_id, caption=formatted_cap, parse_mode="HTML" if formatted_cap else None)
+                elif source_media_msg.photo:
+                    bot.send_photo(target_id, source_media_msg.photo[-1].file_id, caption=formatted_cap, parse_mode="HTML" if formatted_cap else None)
+                elif source_media_msg.audio:
+                    bot.send_audio(target_id, source_media_msg.audio.file_id, caption=formatted_cap, parse_mode="HTML" if formatted_cap else None)
+
+                safe_reply(bot_instance, message, f"✅ <b>File/Media successfully delivered to <code>{target_id}</code> without any referral limitation!</b>", parse_mode="HTML")
+                return
+
+            if not user_msg:
+                safe_reply(bot_instance, message, "⚠️ Please provide a message or attach a file.", parse_mode="HTML")
+                return
+
+            # Clean & compact support message
+            compact_payload = f"💬 <b>Support Team:</b>\n\n{escape(user_msg)}"
             bot.send_message(target_id, compact_payload, parse_mode="HTML")
-            safe_reply(
-                bot_instance,
-                message,
-                f"✅ <b>Message delivered to <code>{target_id}</code>:</b>\n\n"
-                f"{escape(user_msg)}",
-                parse_mode="HTML"
-            )
+            safe_reply(bot_instance, message, f"✅ <b>Message delivered to <code>{target_id}</code>:</b>\n\n{escape(user_msg)}", parse_mode="HTML")
         except Exception as send_err:
-            log_error(f"Failed to send direct message to {target_id}: {send_err}")
+            log_error(f"Failed to send direct message/file to {target_id}: {send_err}")
             safe_reply(
                 bot_instance,
                 message,
@@ -2586,6 +2919,18 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
             return
 
         text = (message.text or "").strip()
+
+        # "⭐ Get Premium Apps" Button & Commands
+        if text in ["⭐ Get Premium Apps", "/premium", "/apps", "/getapps", "⭐ Premium Apps"]:
+            track_user_activity(message.from_user, "Premium Apps Menu", text)
+            try:
+                me = bot_instance.get_me()
+                b_name = me.username or "Streamly7GBot"
+            except Exception:
+                b_name = "Streamly7GBot"
+            view_text, markup = build_premium_apps_view(message.chat.id, b_name)
+            safe_reply(bot_instance, message, view_text, parse_mode="HTML", reply_markup=markup)
+            return
 
         if text == "📊 My Stats":
             handle_my_stats(message)
