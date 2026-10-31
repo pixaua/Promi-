@@ -421,50 +421,43 @@ def build_premium_apps_view(user_id: int, bot_username: str) -> tuple[str, types
     active_apps = get_active_premium_apps()
 
     text_lines = [
-        "⭐ <b>━━━━━━━━━━━━━━━━━━━━━━━━━━</b> ⭐",
-        "👑 <b>7G VIP PREMIUM APPS HUB</b> 🚀",
-        "⭐ <b>━━━━━━━━━━━━━━━━━━━━━━━━━━</b> ⭐\n",
-        "🎁 <i>বিনামূল্যে প্রিমিয়াম ও মোডেড VIP অ্যাপস পেতে বন্ধুদের রেফার করুন!</i>\n",
+        "👑 <b>VIP PREMIUM APPS HUB</b> 🚀",
+        "━━━━━━━━━━━━━━━━━━",
+        "🎁 <i>রেফার করে সম্পূর্ণ ফ্রিতে আনলক করুন প্রিমিয়াম অ্যাপস!</i>\n",
         f"👤 <b>ইউজার:</b> {escape(user_info.get('first_name', 'VIP Member'))}",
-        f"👥 <b>আপনার সফল রেফারেল:</b> <code>{ref_count} জন বন্ধু</code>",
-        f"🌟 <b>রিওয়ার্ড পয়েন্ট:</b> <code>{user_info.get('points', 0)} PTS</code>",
-        f"🔗 <b>আপনার এক্সক্লুসিভ রেফারেল লিংক:</b>\n<code>{ref_link}</code>\n",
-        "📱 <b>AVAILABLE PREMIUM APPS:</b>",
-        "╭────────────────────────╮"
+        f"👥 <b>রেফারেল:</b> <code>{ref_count} জন</code> • <b>পয়েন্ট:</b> <code>{user_info.get('points', 0)} PTS</code>\n",
+        "🔗 <b>আপনার রেফারেল লিংক:</b>",
+        f"<code>{ref_link}</code>\n",
+        "📱 <b>প্রিমিয়াম অ্যাপস তালিকা:</b>"
     ]
 
     markup = types.InlineKeyboardMarkup(row_width=1)
 
     if not active_apps:
-        text_lines.append("  ⚠️ <i>বর্তমানে কোনো প্রিমিয়াম অ্যাপ সক্রিয় নেই। খুব শীঘ্রই নতুন অ্যাপ যুক্ত হবে!</i>")
-        text_lines.append("╰────────────────────────╯")
+        text_lines.append("<i>⚠️ বর্তমানে কোনো প্রিমিয়াম অ্যাপ সক্রিয় নেই।</i>")
     else:
         for idx, (slot, app, req_refs) in enumerate(active_apps, start=1):
             app_name = app.get("name", f"App #{slot}")
-            app_desc = app.get("desc", "")
             unlocked = is_admin or (ref_count >= req_refs)
 
             if is_admin:
-                status_badge = "👑 <b>UNLOCKED (Admin VIP Access)</b>"
-                btn_label = f"✅ [{idx}] {app_name[:22]} (Download)"
+                status_badge = "👑 <b>আনলকড (VIP Admin)</b>"
+                btn_label = f"📥 [{idx}] {app_name[:20]}"
                 markup.add(types.InlineKeyboardButton(btn_label, callback_data=f"papp:get:{slot}"))
             elif unlocked:
-                status_badge = f"✅ <b>UNLOCKED</b> (অ্যাক্সেস অনুমোদিত)"
-                btn_label = f"📥 [{idx}] {app_name[:22]} (Download)"
+                status_badge = "🔓 <b>আনলকড (ডাউনলোড প্রস্তুত)</b>"
+                btn_label = f"📥 [{idx}] {app_name[:20]}"
                 markup.add(types.InlineKeyboardButton(btn_label, callback_data=f"papp:get:{slot}"))
             else:
                 needed = req_refs - ref_count
-                status_badge = f"🔒 <b>LOCKED</b> (প্রয়োজন {req_refs}টি রেফার • আর {needed}টি বাকি)"
-                btn_label = f"🔒 [{idx}] {app_name[:20]} (Need {needed} more)"
+                status_badge = f"🔒 <b>লকড</b> ({req_refs}টি রেফার প্রয়োজন • বাকি {needed}টি)"
+                btn_label = f"🔒 [{idx}] {app_name[:16]} ({needed}টি বাকি)"
                 markup.add(types.InlineKeyboardButton(btn_label, callback_data=f"papp:lock:{slot}"))
 
-            text_lines.append(f"  <b>{idx}. {escape(app_name)}</b>")
-            text_lines.append(f"     • স্ট্যাটাস: {status_badge}")
-            if app_desc:
-                text_lines.append(f"     • <i>{escape(app_desc)}</i>")
+            text_lines.append(f"<b>{idx}. {escape(app_name)}</b>")
+            text_lines.append(f"   └ স্ট্যাটাস: {status_badge}")
 
-        text_lines.append("╰────────────────────────╯\n")
-        text_lines.append("👇 <b>নিচের অ্যাপ বাটনে ট্যাপ করে সরাসরি ডাউনলোড বা আনলক করুন:</b>")
+        text_lines.append("\n👇 <i>অ্যাপ পেতে নিচের বাটনে ক্লিক করুন:</i>")
 
     share_text = quote(f"🔥 আনলিমিটেড এইচডি ভিডিও ডাউনলোডার ও প্রিমিয়াম আনলকড অ্যাপস পেতে এখনই জয়েন করুন: {ref_link}")
     btn_share = types.InlineKeyboardButton("🚀 বন্ধুদের মাঝে রেফার লিংক শেয়ার করুন", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")
@@ -2170,7 +2163,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
                 try:
                     bot_instance.answer_callback_query(
                         call.id,
-                        text=f"🔒 {app_name[:20]} ইজ লকড!\nআপনার {ref_count}/{req_refs}টি রেফারেল আছে। আনলক করতে আরও {needed} জন বন্ধুকে ইনভাইট করুন!",
+                        text=f"🔒 {app_name[:18]} লকড!\nআনলক করতে আর {needed} জন বন্ধুকে ইনভাইট করুন।",
                         show_alert=True
                     )
                 except Exception:
@@ -2184,17 +2177,17 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
 
                 ref_link = f"https://t.me/{b_name}?start={call.from_user.id}"
                 enc_card = (
-                    f"🔒 <b>অ্যাপ আনলক করার নিয়ম:</b>\n\n"
+                    f"🔒 <b>অ্যাপ আনলক করার নিয়ম:</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
                     f"📱 <b>অ্যাপ:</b> {escape(app_name)}\n"
-                    f"🎯 <b>মোট প্রয়োজন:</b> {req_refs}টি রেফারেল\n"
-                    f"👥 <b>আপনার বর্তমান রেফারেল:</b> {ref_count}টি\n"
-                    f"⚡ <b>আর মাত্র প্রয়োজন:</b> <b>{needed} জন বন্ধু</b>!\n\n"
-                    f"🔗 <b>আপনার পার্সোনাল রেফারেল লিংক:</b>\n<code>{ref_link}</code>\n\n"
-                    f"<i>লিংকটি বন্ধুদের মেসেঞ্জার, হোয়াটসঅ্যাপ বা টেলিগ্রাম গ্রুপে পাঠান। তারা লিংকে ক্লিক করে বটে /start দিলেই স্বয়ংক্রিয়ভাবে অ্যাপটি আনলক হয়ে যাবে!</i> 🚀"
+                    f"🎯 <b>প্রয়োজন:</b> {req_refs}টি রেফার (আপনার আছে: {ref_count}টি)\n"
+                    f"⚡ <b>বাকি:</b> <b>আর মাত্র {needed} জন বন্ধু!</b>\n\n"
+                    f"🔗 <b>আপনার রেফারেল লিংক:</b>\n<code>{ref_link}</code>\n\n"
+                    f"<i>লিংকটি বন্ধুদের পাঠান। তারা বটে জয়েন করলেই অ্যাপটি স্বয়ংক্রিয়ভাবে আনলক হয়ে যাবে!</i> 🚀"
                 )
                 share_payload = quote(f"🔥 ডাউনলোড করুন আনলিমিটেড ভিডিও ও প্রিমিয়াম মোডেড অ্যাপস একদম ফ্রিতে! এখনই জয়েন করুন: {ref_link}")
                 enc_markup = types.InlineKeyboardMarkup()
-                enc_markup.add(types.InlineKeyboardButton("🚀 শেয়ার করুন বন্ধুদের মাঝে", url=f"https://t.me/share/url?url={ref_link}&text={share_payload}"))
+                enc_markup.add(types.InlineKeyboardButton("🚀 বন্ধুদের মাঝে শেয়ার করুন", url=f"https://t.me/share/url?url={ref_link}&text={share_payload}"))
                 safe_reply(bot_instance, call.message, enc_card, parse_mode="HTML", reply_markup=enc_markup)
                 return
 
@@ -2207,22 +2200,21 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
                 app_file_id = app_entry.get("file_id", "")
 
                 try:
-                    bot_instance.answer_callback_query(call.id, text=f"🎉 অ্যাক্সেস আনলকড: {app_name[:20]}!")
+                    bot_instance.answer_callback_query(call.id, text=f"🎉 আনলকড: {app_name[:20]}!")
                 except Exception:
                     pass
 
                 delivery_text = (
-                    f"╭━━━━ ⭐ <b>PREMIUM APP UNLOCKED</b> ⭐ ━━━━╮\n"
-                    f"🎉 <b>অভিনন্দন! আপনি সফলভাবে আনলক করেছেন:</b>\n"
-                    f"📱 <b>{escape(app_name)}</b>\n"
+                    f"🎉 <b>PREMIUM APP UNLOCKED</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"📱 <b>অ্যাপ:</b> {escape(app_name)}\n"
                     f"{('📝 <i>' + escape(app_desc) + '</i>' + chr(10)) if app_desc else ''}"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
                     f"📥 <b>ডাউনলোড লিংক:</b>\n"
-                    f"<a href=\"{app_link}\">👉 সরাসরি ডাউনলোড করতে এখানে ক্লিক করুন 👈</a>\n\n"
-                    f"🔗 <b>বিকল্প লিংক:</b> <code>{escape(app_link)}</code>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"💡 <i>কোনো সমস্যা হলে লিংকটি ব্রাউজারে পেস্ট করুন বা এডমিনকে জানান।</i>\n"
-                    f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
+                    f"👉 <a href=\"{app_link}\"><b>সরাসরি ডাউনলোড করতে এখানে ট্যাপ করুন</b></a>\n\n"
+                    f"🔗 <b>ডিরেক্ট লিংক:</b>\n<code>{escape(app_link)}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"💡 <i>কোনো সমস্যা হলে লিংকটি ব্রাউজারে ওপেন করুন।</i>"
                 )
 
                 dl_markup = types.InlineKeyboardMarkup()
@@ -2790,17 +2782,17 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
                 app_file_id = app_entry.get("file_id", "")
 
                 gift_text = (
-                    f"╭━━━━ 🎁 <b>ADMIN VIP GIFT UNLOCKED</b> ━━━━╮\n"
-                    f"👑 <b>এডমিন আপনাকে পার্সোনালি ভিআইপি অ্যাক্সেস দিয়েছেন!</b>\n\n"
+                    f"🎁 <b>SPECIAL VIP GIFT FROM ADMIN</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"👑 <i>এডমিন আপনাকে সরাসরি প্রিমিয়াম অ্যাপটি গিফট করেছেন!</i>\n\n"
                     f"📱 <b>অ্যাপ:</b> {escape(app_name)}\n"
                     f"{('📝 <i>' + escape(app_desc) + '</i>' + chr(10)) if app_desc else ''}"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
                     f"📥 <b>ডাউনলোড লিংক:</b>\n"
-                    f"<a href=\"{app_link}\">👉 সরাসরি ডাউনলোড করতে এখানে ক্লিক করুন 👈</a>\n\n"
-                    f"🔗 <b>বিকল্প লিংক:</b> <code>{escape(app_link)}</code>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"✨ <i>কোনো রেফারেল ছাড়াই আপনি সরাসরি এটি ব্যবহার করতে পারবেন!</i> 🚀\n"
-                    f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
+                    f"👉 <a href=\"{app_link}\"><b>সরাসরি ডাউনলোড করতে এখানে ট্যাপ করুন</b></a>\n\n"
+                    f"🔗 <b>ডিরেক্ট লিংক:</b>\n<code>{escape(app_link)}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"✨ <i>কোনো রেফারেল ছাড়াই সরাসরি ব্যবহারের জন্য উন্মুক্ত!</i> 🚀"
                 )
                 gift_markup = types.InlineKeyboardMarkup()
                 if app_link:
@@ -2809,7 +2801,7 @@ def register_bot_handlers(bot_instance: telebot.TeleBot, is_clone: bool = False,
                 try:
                     bot.send_message(target_id, gift_text, parse_mode="HTML", reply_markup=gift_markup)
                     if app_file_id:
-                        bot.send_document(target_id, app_file_id, caption=f"📦 {escape(app_name)} (VIP Gift)", parse_mode="HTML")
+                        bot.send_document(target_id, app_file_id, caption=f"📦 {escape(app_name)} (VIP Delivery)", parse_mode="HTML")
                     safe_reply(bot_instance, message, f"✅ <b>{escape(app_name)} (Slot #{slot_id}) has been delivered to <code>{target_id}</code> without any referral requirement!</b>", parse_mode="HTML")
                 except Exception as gift_err:
                     safe_reply(bot_instance, message, f"❌ <b>Failed to deliver app to {target_id}:</b> <i>{escape(str(gift_err))}</i>", parse_mode="HTML")
