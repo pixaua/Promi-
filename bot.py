@@ -138,7 +138,7 @@ PREMIUM_APPS: dict[int, dict[str, Any]] = {
     2: {
         "name": "111 VPN Pro (WARP+ Unlimited)",
         "desc": "🛡️ Ultra-Fast 1.1.1.1 WARP+ VPN • Unlimited Bandwidth • Zero Lag",
-        "link": "https://t.me/c/sample_vpn_link",
+        "link": "https://t.me/auapix_1/205",
         "file_id": "",
         "required_refs": 3,  # 2nd app: 1 additional referral (2 + 1 = 3)
     },
