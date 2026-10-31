@@ -126,36 +126,40 @@ CLONES_FILE = os.path.join(DATA_DIR, "clones_db.json")
 # ----------------- ⭐ GET PREMIUM APPS CONFIGURATION (10 SLOTS) ----------------- #
 # 10 configurable slots: Slots 1-3 pre-defined; Slots 4-10 empty template slots ("").
 # The bot dynamically displays ONLY apps with valid non-empty 'name' and ('link' or 'file_id')!
-# Referral Logic: 1st active app requires 2 referrals; each subsequent app requires +1 referral (2, 3, 4, 5...).
+# Referral Logic: Exactly 2 successful referrals unlock ALL premium apps automatically!
+REQUIRED_REFERRALS_FOR_APPS = 2
+
 PREMIUM_APPS: dict[int, dict[str, Any]] = {
     1: {
         "name": "CapCut Pro (Mod VIP)",
         "desc": "🎬 No Watermark • 4K 60FPS • VIP Transitions & Templates Unlocked",
         "link": "https://t.me/c/sample_capcut_link",
-        "file_id": "",  # Optional direct Telegram document/file ID
-        "required_refs": 2,  # 1st app: 2 referrals required
+        "file_id": "",  # Optional direct Telegram document/file ID or link
+        "required_refs": 2,
     },
     2: {
         "name": "111 VPN Pro (WARP+ Unlimited)",
         "desc": "🛡️ Ultra-Fast 1.1.1.1 WARP+ VPN • Unlimited Bandwidth • Zero Lag",
-        "link": "https://t.me/auapix_1/205",
+        "link": "https://t.me/c/sample_vpn_link",
         "file_id": "",
-        "required_refs": 3,  # 2nd app: 1 additional referral (2 + 1 = 3)
+        "required_refs": 2,
     },
     3: {
         "name": "Telegram Pro (VIP Features)",
         "desc": "⭐ Faster Downloads • Voice-to-Text • Custom App Icons & Badges",
         "link": "https://t.me/c/sample_tgpro_link",
         "file_id": "",
-        "required_refs": 4,  # 3rd app: 1 additional referral (3 + 1 = 4)
+        "required_refs": 2,
     },
-    4: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 5},
-    5: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 6},
-    6: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 7},
-    7: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 8},
-    8: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 9},
-    9: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 10},
-    10: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 11},
+    4: {"name": "",
+        "desc": "",
+        "link": "", "file_id": "", "required_refs": 2},
+    5: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 2},
+    6: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 2},
+    7: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 2},
+    8: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 2},
+    9: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 2},
+    10: {"name": "", "desc": "", "link": "", "file_id": "", "required_refs": 2},
 }
 
 # State & Concurrency (Scaled for 100+ High-Concurrency Users)
@@ -382,27 +386,18 @@ def get_active_premium_apps() -> list[tuple[int, dict[str, Any], int]]:
     """
     Returns list of tuples: (slot_number, app_dictionary, calculated_required_refs).
     Filters ONLY apps where 'name' is non-empty and has either 'link' or 'file_id'.
-    Enforces referral logic:
-    - 1st active app requires 2 referrals.
-    - Each subsequent active app requires 1 additional referral (2, 3, 4, 5...).
+    Exactly 2 successful referrals automatically unlock ALL premium apps.
     """
     active_apps: list[tuple[int, dict[str, Any], int]] = []
-    rank = 1
     for slot in range(1, 11):
         app = PREMIUM_APPS.get(slot, {})
         name = (app.get("name") or "").strip()
         link = (app.get("link") or "").strip()
         file_id = (app.get("file_id") or "").strip()
         if name and (link or file_id):
-            # Calculate referral requirement
             custom_req = app.get("required_refs")
-            if isinstance(custom_req, int) and custom_req > 0:
-                req_refs = custom_req
-            else:
-                req_refs = 2 if rank == 1 else (1 + rank)
-
+            req_refs = custom_req if (isinstance(custom_req, int) and custom_req > 0) else REQUIRED_REFERRALS_FOR_APPS
             active_apps.append((slot, app, req_refs))
-            rank += 1
     return active_apps
 
 def build_premium_apps_view(user_id: int, bot_username: str) -> tuple[str, types.InlineKeyboardMarkup]:
@@ -423,7 +418,7 @@ def build_premium_apps_view(user_id: int, bot_username: str) -> tuple[str, types
     text_lines = [
         "👑 <b>VIP PREMIUM APPS HUB</b> 🚀",
         "━━━━━━━━━━━━━━━━━━",
-        "🎁 <i>রেফার করে সম্পূর্ণ ফ্রিতে আনলক করুন প্রিমিয়াম অ্যাপস!</i>\n",
+        "🎁 <i>মাত্র ২টি সফল রেফার করলেই সমস্ত প্রিমিয়াম অ্যাপ আনলক!</i>\n",
         f"👤 <b>ইউজার:</b> {escape(user_info.get('first_name', 'VIP Member'))}",
         f"👥 <b>রেফারেল:</b> <code>{ref_count} জন</code> • <b>পয়েন্ট:</b> <code>{user_info.get('points', 0)} PTS</code>\n",
         "🔗 <b>আপনার রেফারেল লিংক:</b>",
